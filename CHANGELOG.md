@@ -2,6 +2,16 @@
 
 All notable changes to LethalPirateClark are documented in this file. Dates are YYYY-MM-DD.
 
+## [1.4.1] - 2026-06-06
+
+### Rebuild the bundle for the game's actual Unity version
+v1.4.0 registered correctly but the bundle wouldn't load — the log showed:
+`The AssetBundle ... could not be loaded because it is not compatible with this newer version of the Unity runtime. Rebuild the AssetBundle to fix this error.` → `AssetBundle.LoadFromFile returned NULL`.
+
+- **Root cause:** the bundle was baked with Unity **2022.3.9f1** (what the repo's `ProjectVersion.txt` claimed), but Lethal Company now runs on Unity **2022.3.62f1** (`Running under Unity v2022.3.62` in the log). Unity rejects a bundle built by an older serialization than the runtime.
+- **Fix:** rebuilt the bundle with **2022.3.62f1** (matching the game). `ProjectVersion.txt` updated to 2022.3.62f1. Unity's package resolver also moved `com.unity.netcode.gameobjects` to 1.12.x and HDRP to 14.0.12 — which is correct: the game's shipped netcode is **1.12.2** (the old 1.5.2 pin was stale from the 2022.3.9 era). The NetworkObject/NetworkTransform script GUIDs are unchanged across those versions, so they still resolve in-game; the prefab keeps a valid baked `GlobalObjectIdHash` (`2282514581`).
+- No gameplay/code changes — DLL logic is identical to v1.4.0, just rebuilt at 1.4.1. The only functional change is a bundle that the live game can actually load.
+
 ## [1.4.0] - 2026-06-06
 
 ### Back to the asset bundle — the real fix for "never actually spawns"
