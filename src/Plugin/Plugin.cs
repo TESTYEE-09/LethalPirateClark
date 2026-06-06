@@ -13,13 +13,13 @@ using UnityEngine.AI;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.2.3")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.3.0")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "1.2.3";
+    public const string Version = "1.3.0";
 
     internal static ManualLogSource Log = null!;
 
@@ -134,10 +134,21 @@ public class Plugin : BaseUnityPlugin
     // (Unity engine), the AI script, EnemyAICollisionDetect (game script).
     private GameObject BuildPiratePrefab()
     {
-        // Root: an empty GameObject.
+        // Root: an empty GameObject. Built while INACTIVE so AddComponent
+        // doesn't fire component Awakes mid-construction, then switched ON at
+        // the very end (see SetActive(true) before return).
         var root = new GameObject("StillLifeEnemy");
         root.SetActive(false);
-        root.transform.position = Vector3.zero;
+        // We must NOT leave the template permanently inactive: Netcode for
+        // GameObjects refuses to spawn an object whose NetworkBehaviours are
+        // disabled (an inactive GameObject disables them). That was the real
+        // "doesn't move" bug — the clone was never truly network-spawned, so
+        // IsOwner/IsServer stayed false and EnemyAI.Update early-returned.
+        // Instead, hide the active template by parking it far below the map;
+        // the game's Instantiate overrides the clone's position to the real
+        // spawn point, so this is invisible in play.
+        root.transform.position = new Vector3(0f, -8000f, 0f);
+        root.transform.localScale = Vector3.one * 1.25f;  // a bit taller/bulkier
 
         // CRITICAL: this GameObject is our prefab TEMPLATE — the game clones it
         // every time it spawns Pirate Clark. A plain scene GameObject gets
@@ -226,10 +237,22 @@ public class Plugin : BaseUnityPlugin
         agent.stoppingDistance = 0.6f;
         agent.areaMask = ~0;
 
-        // AudioSource — for the eat SFX (and future ambient).
+        // AudioSource — for the eat SFX one-shot.
         var sfx = root.AddComponent<AudioSource>();
         sfx.playOnAwake = false;
         sfx.spatialBlend = 1f;  // 3D positional
+
+        // Second AudioSource for the looping ambient entity sound. Both clips
+        // are decoded at runtime from embedded 16-bit PCM WAVs.
+        var ambientSrc = root.AddComponent<AudioSource>();
+        ambientSrc.playOnAwake = false;
+        ambientSrc.loop = true;
+        ambientSrc.spatialBlend = 1f;
+        ambientSrc.volume = 0.7f;
+        ambientSrc.minDistance = 4f;
+        ambientSrc.maxDistance = 32f;
+        ambientSrc.clip = WavLoader.LoadEmbedded("LethalPirateClark.pc_ambient.wav");
+        var eatClip = WavLoader.LoadEmbedded("LethalPirateClark.pc_eat.wav");
 
         // NetworkObject — required for netcode (multiplayer).
         var networkObjectT = System.Type.GetType("Unity.Netcode.NetworkObject, Unity.Netcode.Runtime");
@@ -268,6 +291,8 @@ public class Plugin : BaseUnityPlugin
         ai.enemyType = null;  // set below when EnemyType is built
         ai.creatureAnimator = root.GetComponent<Animator>();
         ai.creatureSFX = sfx;
+        ai.voiceSource = ambientSrc;
+        ai.eatClip = eatClip;
 
         // EnemyAICollisionDetect — game script, added at runtime so the Mac
         // build target doesn't have to bake it in.
@@ -292,6 +317,10 @@ public class Plugin : BaseUnityPlugin
         {
             Log.LogError("[StillLife] EnemyAICollisionDetect type not found — enemy won't detect player collisions.");
         }
+
+        // All components are in place — switch the template ON so Netcode can
+        // clone it as an ACTIVE object with enabled NetworkBehaviours.
+        root.SetActive(true);
 
         return root;
     }

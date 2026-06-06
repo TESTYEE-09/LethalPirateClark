@@ -49,6 +49,12 @@ public class StillLifeAI : EnemyAI
     {
         try
         {
+            if (!IsSpawned)
+            {
+                // The inert prefab template (kept active so Netcode can clone
+                // it, but never network-spawned itself). Run no EnemyAI setup.
+                return;
+            }
             base.Start();
             baseSpeed = Plugin.MoveSpeed.Value;
             currentBehaviourStateIndex = (int)State.Dormant;
@@ -76,6 +82,10 @@ public class StillLifeAI : EnemyAI
                 }
                 Plugin.Log.LogInfo($"[StillLife] agent.isOnNavMesh={agent.isOnNavMesh}, enabled={agent.enabled}, IsOwner={IsOwner}, IsServer={IsServer}.");
             }
+
+            // Begin the looping ambient entity sound.
+            if (voiceSource != null && voiceSource.clip != null && !voiceSource.isPlaying)
+                voiceSource.Play();
         }
         catch (System.Exception ex)
         {
@@ -107,6 +117,7 @@ public class StillLifeAI : EnemyAI
     {
         try
         {
+            if (!IsSpawned) return;
             base.Update();
             if (isEnemyDead) return;
 
