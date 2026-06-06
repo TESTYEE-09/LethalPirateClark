@@ -47,10 +47,20 @@ public class StillLifeAI : EnemyAI
 
     public override void Start()
     {
-        base.Start();
-        baseSpeed = Plugin.MoveSpeed.Value;
-        currentBehaviourStateIndex = (int)State.Dormant;
-        Plugin.LiveStillLives++;
+        try
+        {
+            base.Start();
+            baseSpeed = Plugin.MoveSpeed.Value;
+            currentBehaviourStateIndex = (int)State.Dormant;
+            Plugin.LiveStillLives++;
+            // v1.0.4: log exactly where we spawned so the user can find us.
+            Plugin.Log.LogInfo($"[StillLife] Pirate Clark SPAWNED at {transform.position:F1} (round time {StartOfRound.Instance?.currentLevel?.name ?? "unknown"}). LiveStillLives={Plugin.LiveStillLives}");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"[StillLife] Start() failed: {ex.GetType().Name}: {ex.Message}");
+            Plugin.Log.LogError($"[StillLife] Stack: {ex.StackTrace}");
+        }
     }
 
     public override void DoAIInterval()
@@ -74,28 +84,45 @@ public class StillLifeAI : EnemyAI
 
     public override void Update()
     {
-        base.Update();
-        if (isEnemyDead) return;
-
-        bool seen = AnyPlayerSeesMe();
-        if (seen)
+        try
         {
-            _unseenTime = 0f;
-            Freeze(true);
+            base.Update();
+            if (isEnemyDead) return;
+
+            bool seen = AnyPlayerSeesMe();
+            if (seen)
+            {
+                _unseenTime = 0f;
+                Freeze(true);
+            }
+            else
+            {
+                _unseenTime += Time.deltaTime;
+                Freeze(false);
+                agent.speed = Mathf.Min(maxSpeed, baseSpeed + _unseenTime * accelPerSecondUnseen);
+            }
+
+            if (currentBehaviourStateIndex != (int)State.Dormant)
+                FlickerNearbyLights(active: !seen);
+
+            if (IsServer && _target != null && !_frozen)
+                TryGrab();
         }
-        else
+        catch (System.Exception ex)
         {
-            _unseenTime += Time.deltaTime;
-            Freeze(false);
-            agent.speed = Mathf.Min(maxSpeed, baseSpeed + _unseenTime * accelPerSecondUnseen);
+            // Catch all per-frame exceptions so one bad call doesn't kill the
+            // enemy silently. Throttle logging to once per second so we don't
+            // flood the BepInEx log.
+            if (Time.time - _lastUpdateErrorTime > 1f)
+            {
+                _lastUpdateErrorTime = Time.time;
+                Plugin.Log.LogError($"[StillLife] Update() exception: {ex.GetType().Name}: {ex.Message}");
+                Plugin.Log.LogError($"[StillLife] Stack: {ex.StackTrace}");
+            }
         }
-
-        if (currentBehaviourStateIndex != (int)State.Dormant)
-            FlickerNearbyLights(active: !seen);
-
-        if (IsServer && _target != null && !_frozen)
-            TryGrab();
     }
+
+    private float _lastUpdateErrorTime;
 
     // --- Core hunting -------------------------------------------------------
 
@@ -169,14 +196,23 @@ public class StillLifeAI : EnemyAI
         if (Time.time < _nextFlickerToggle) return;
         _nextFlickerToggle = Time.time + Random.Range(0.05f, active ? 0.4f : 1.5f);
 
-        foreach (var col in Physics.OverlapSphere(transform.position, 12f,
-                     1 << LayerMask.NameToLayer("Room")))
+        // Resolve the "Room" layer once. If it doesn't exist, fall back to
+        // Default so the call doesn't throw every frame.
+        int roomLayer = LayerMask.NameToLayer("Room");
+        int layerMask = (roomLayer < 0) ? ~0 : (1 << roomLayer);
+        // Cache the resolved mask on first call so we don't do the
+        // NameToLayer lookup every frame.
+        if (_roomLayerMask == 0) _roomLayerMask = layerMask;
+
+        foreach (var col in Physics.OverlapSphere(transform.position, 12f, _roomLayerMask))
         {
             var light = col.GetComponentInChildren<Light>();
             if (light != null)
                 light.enabled = active ? (Random.value > 0.35f) : true;
         }
     }
+
+    private int _roomLayerMask;
 
     /// <summary>
     /// Hook for the door-collision patch: knock first, then break.
