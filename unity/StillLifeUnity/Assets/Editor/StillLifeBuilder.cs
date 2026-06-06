@@ -355,14 +355,14 @@ public static class StillLifeBuilder
         }
 
         Directory.CreateDirectory(OutDir);
-        // We have to build for a target the Mac editor supports. Originally
-        // this was StandaloneWindows64 (the Lethal Company runtime), but
-        // building on Mac with no Windows module installed fails. Since the
-        // bundle is purely data (no game scripts — those are added by the mod
-        // DLL at runtime), StandaloneOSX produces a bundle loadable by the
-        // Windows game. This is a common pattern for Mac-built Lethal Company
-        // asset bundles.
-        BuildPipeline.BuildAssetBundles(OutDir, BuildAssetBundleOptions.None, BuildTarget.StandaloneOSX);
+        // MUST be StandaloneWindows64 — Lethal Company is a Windows build, and
+        // Unity stamps each AssetBundle with its target platform. A bundle
+        // built for StandaloneOSX is REJECTED by the Windows player at load
+        // (AssetBundle.LoadFromFile returns null, "built for a different
+        // platform") — that was the real cause of the v1.0.4 "corrupt bundle".
+        // Building this target on a Mac requires the Windows-Mono build-support
+        // module to be installed in the editor (PlaybackEngines/WindowsStandalone).
+        BuildPipeline.BuildAssetBundles(OutDir, BuildAssetBundleOptions.None, BuildTarget.StandaloneWindows64);
         AssetDatabase.Refresh();
 
         var outFile = Path.Combine(OutDir, BundleName);

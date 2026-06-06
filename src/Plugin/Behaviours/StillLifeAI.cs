@@ -158,11 +158,24 @@ public class StillLifeAI : EnemyAI
         if (_target == null)
         {
             SwitchState(State.Dormant);
+            if (IsServer && agent != null && agent.isActiveAndEnabled && agent.isOnNavMesh)
+                agent.isStopped = true;
             return;
         }
 
         if (currentBehaviourStateIndex == (int)State.Dormant)
             SwitchState(State.Stalking);
+
+        // v1.3.5: refresh the NavMesh destination here, on the AI interval,
+        // the way vanilla enemies do — NOT every frame in Update(). Update()
+        // owns per-frame speed/freeze and the off-mesh fallback; this owns
+        // pathing. Server-authoritative: clients receive the position via
+        // EnemyAI's own sync (+ NetworkTransform), so they must not path.
+        if (IsServer && !_frozen && agent != null && agent.isActiveAndEnabled && agent.isOnNavMesh)
+        {
+            agent.isStopped = false;
+            agent.SetDestination(_target.transform.position);
+        }
     }
 
     public override void Update()
@@ -195,45 +208,68 @@ public class StillLifeAI : EnemyAI
             if (currentBehaviourStateIndex != (int)State.Dormant)
                 FlickerNearbyLights(active: !seen);
 
-            // === Manual movement (v1.3.4) ===
-            // v1.3.3's NavMeshAgent-driven movement could fail in several ways:
-            // (a) agent is null because AddComponent<NavMeshAgent> failed at
-            //     build time (no NavMesh in the main-menu scene);
-            // (b) agent is non-null but agent.isOnNavMesh is false on the clone
-            //     because the spawn point is off the NavMesh;
-            // (c) agent.path is empty because the spawn point is unreachable.
-            // In all three cases the enemy stays put. v1.3.4 drives the
-            // transform directly with MoveTowards, so the enemy ALWAYS moves
-            // when not frozen. The NavMeshAgent is still updated for the
-            // game's API compatibility (door knock patches, etc.) but it's
-            // not the source of truth for position.
-            if (IsServer && !_frozen && _target != null && currentSpeed > 0f)
+            // === Movement (v1.3.5) ===
+            // The server is authoritative. When the agent is on a NavMesh it is
+            // the mover: it grounds him (so he can't float) and routes him
+            // around walls. The destination is refreshed on the AI interval in
+            // DoAIInterval(); here we only set per-frame speed and stop/go.
+            //
+            // The v1.3.4 bug: the manual transform-walk ran during every hunt
+            // (the `if`), so the agent's SetDestination in the `else if` was
+            // dead code, AND the agent — still left with updatePosition=true —
+            // overwrote the manual writes every internal tick back to its
+            // never-updated destination. Net result: he stood still and, never
+            // moving, the watchdog kept teleporting him out of sight.
+            //
+            // Fix: let the agent own the transform on the server only. On
+            // clients EnemyAI's own position sync (and the NetworkTransform)
+            // replicate the server position, so the agent must NOT write the
+            // transform there or it fights the sync.
+            bool onNavMesh = agent != null && agent.isActiveAndEnabled && agent.isOnNavMesh;
+            if (agent != null)
+            {
+                bool serverDrives = IsServer && onNavMesh;
+                agent.updatePosition = serverDrives;
+                agent.updateRotation = serverDrives;
+                agent.speed = currentSpeed;
+                if (onNavMesh) agent.isStopped = _frozen || _target == null || currentSpeed <= 0f;
+            }
+
+            // Off-NavMesh fallback (e.g. spawned just off the mesh): walk
+            // straight at the target and raycast DOWN to the floor so he stays
+            // grounded instead of hanging at spawn height. Server-only; the
+            // agent isn't driving the transform in this case so there's no
+            // fight.
+            if (IsServer && !_frozen && _target != null && currentSpeed > 0f && !onNavMesh)
             {
                 Vector3 toTarget = _target.transform.position - transform.position;
-                toTarget.y = 0f;  // stay on the ground plane; no flying
+                toTarget.y = 0f;
                 float dist = toTarget.magnitude;
                 if (dist > 0.5f)
                 {
                     Vector3 step = toTarget.normalized * currentSpeed * Time.deltaTime;
                     if (step.magnitude > dist) step = toTarget;  // don't overshoot
-                    transform.position += step;
-                    // Face the target so he doesn't moonwalk.
+                    Vector3 next = transform.position + step;
+                    // Snap to the floor: cast down from just above the next step.
+                    if (Physics.Raycast(next + Vector3.up * 2f, Vector3.down, out var groundHit, 6f,
+                            StartOfRound.Instance.collidersAndRoomMaskAndDefault,
+                            QueryTriggerInteraction.Ignore))
+                    {
+                        next.y = groundHit.point.y;
+                    }
+                    transform.position = next;
+                    // Keep the agent's internal position aligned so it doesn't
+                    // snap him backward the moment it regains the NavMesh.
+                    if (agent != null && agent.isActiveAndEnabled)
+                    {
+                        try { agent.nextPosition = next; } catch { /* off-mesh */ }
+                    }
                     Vector3 lookDir = toTarget.normalized;
                     if (lookDir.sqrMagnitude > 0.0001f)
                     {
-                        Quaternion target = Quaternion.LookRotation(lookDir);
-                        transform.rotation = Quaternion.Slerp(transform.rotation, target, 10f * Time.deltaTime);
+                        Quaternion want = Quaternion.LookRotation(lookDir);
+                        transform.rotation = Quaternion.Slerp(transform.rotation, want, 10f * Time.deltaTime);
                     }
-                }
-            }
-            else if (agent != null && agent.isActiveAndEnabled && agent.isOnNavMesh)
-            {
-                // Best-effort NavMeshAgent pathing as a backup for the
-                // obstacle-aware behaviour, only if it's on a NavMesh.
-                agent.speed = currentSpeed;
-                if (IsServer && _target != null && !_frozen)
-                {
-                    agent.SetDestination(_target.transform.position);
                 }
             }
 
@@ -361,8 +397,10 @@ public class StillLifeAI : EnemyAI
         creatureAnimator?.SetTrigger("knock");
         for (int i = 0; i < 3; i++)
         {
-            // play knock SFX via creatureSFX if assigned in the prefab
-            creatureSFX?.PlayOneShot(creatureSFX.clip);
+            // play knock SFX via creatureSFX if a clip is assigned in the prefab
+            // (guarded — PlayOneShot(null) spams a Unity warning every knock).
+            if (creatureSFX != null && creatureSFX.clip != null)
+                creatureSFX.PlayOneShot(creatureSFX.clip);
             yield return new WaitForSeconds(0.6f);
             if (door == null) break;
         }

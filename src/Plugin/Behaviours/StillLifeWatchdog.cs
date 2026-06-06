@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using GameNetcodeStuff;
 using UnityEngine;
+using UnityEngine.AI;
 
 namespace StillLife.Behaviours;
 
@@ -61,31 +62,17 @@ internal class StillLifeWatchdog : MonoBehaviour
                 Plugin.Log.LogInfo($"[StillLife] Watchdog ACTIVATED a Pirate Clark clone at {go.transform.position:F1} (was inactive).");
             }
 
-            // v1.3.3: force the 1.25x scale on every clone, every watchdog pass.
-            // The template's localScale is set to 1.25 in BuildPiratePrefab, but
-            // the spawn pipeline (or NGO's NetworkTransform init) may reset it
-            // on Instantiate. Re-apply it unconditionally so the model is the
-            // right size no matter what.
-            var s = go.transform.localScale;
-            if (Mathf.Abs(s.x - 1.25f) > 0.01f ||
-                Mathf.Abs(s.y - 1.25f) > 0.01f ||
-                Mathf.Abs(s.z - 1.25f) > 0.01f)
-            {
-                go.transform.localScale = new Vector3(1.25f, 1.25f, 1.25f);
-            }
+            // v1.4.0: no more scale-forcing. The bundle prefab carries the
+            // model's correct scale baked in the editor, so overriding it here
+            // (the old runtime path hardcoded 1.25×) would distort the real
+            // model. Scale is left exactly as the prefab defines it.
 
             // v1.3.2 per-clone diagnostic: log a one-liner only when the
-            // clone's state is non-default (inactive, scale != 1.25,
-            // parented to the template, NetworkObject.IsSpawned == false).
-            // Includes an int hash of the noteworthy state so we only re-log
-            // when the state actually changes.
+            // clone's state is non-default (inactive or NetworkObject.IsSpawned
+            // == false — the latter is the key signal that NGO failed to network-
+            // spawn the clone). Includes an int hash so we only re-log on change.
             bool isInActive = !go.activeSelf; // post-activation, this is false
-            var parent = go.transform.parent;
-            bool parentedToTemplate = parent != null && parent.name == "StillLifeEnemy";
             var scale = go.transform.localScale;
-            bool scaleOff = Mathf.Abs(scale.x - 1.25f) > 0.01f
-                         || Mathf.Abs(scale.y - 1.25f) > 0.01f
-                         || Mathf.Abs(scale.z - 1.25f) > 0.01f;
             bool netSpawned = false;
             try
             {
@@ -98,21 +85,18 @@ internal class StillLifeWatchdog : MonoBehaviour
             }
             catch { /* NetworkObject may be null; treat as not-spawned */ }
 
-            if (isInActive || parentedToTemplate || scaleOff || !netSpawned)
+            if (isInActive || !netSpawned)
             {
                 // Compose a small int fingerprint of the noteworthy bits so we
                 // re-log only when the set of problems changes per-clone.
                 int h = (isInActive ? 1 : 0)
-                      | (parentedToTemplate ? 2 : 0)
-                      | (scaleOff ? 4 : 0)
                       | (netSpawned ? 0 : 8);
                 int perCloneKey = (h << 16) | (go.GetInstanceID() & 0xFFFF);
                 if (perCloneKey != _lastPerCloneKey)
                 {
                     _lastPerCloneKey = perCloneKey;
                     Plugin.Log.LogInfo($"[StillLife] Watchdog per-clone state on '{go.name}' (id={go.GetInstanceID()}): " +
-                        $"inactive={isInActive}, parentedToTemplate={parentedToTemplate}, " +
-                        $"scale={scale:F2} (expected 1.25), NetworkObject.IsSpawned={netSpawned}.");
+                        $"inactive={isInActive}, scale={scale:F2}, NetworkObject.IsSpawned={netSpawned}.");
                 }
             }
 
@@ -129,23 +113,36 @@ internal class StillLifeWatchdog : MonoBehaviour
             {
                 if (Vector3.Distance(curPos, prev.pos) < 0.25f)
                 {
-                    if (now - prev.time > 3f)
+                    // v1.3.5: only intervene after a LONG stall (6s), and land
+                    // him on WALKABLE GROUND near a player — not a random 8m
+                    // offset. The old random-direction teleport (every 3s,
+                    // because the movement bug meant he never moved) dropped
+                    // him inside walls or behind the player, which read as
+                    // "he disappeared". With movement fixed this should never
+                    // fire; it's now a genuine last resort that keeps him
+                    // visible and on the NavMesh so the AI can take over.
+                    if (now - prev.time > 6f)
                     {
-                        // Stuck for 3s. Teleport near the nearest player.
                         var target = FindNearestLivePlayer();
                         if (target != null)
                         {
-                            // Pick a spot 8m from the player in a random
-                            // direction. Doesn't have to be on a NavMesh —
-                            // the manual movement in Update() will then
-                            // walk the rest of the way.
-                            var dir = UnityEngine.Random.insideUnitCircle.normalized;
-                            var offset = new Vector3(dir.x, 0f, dir.y) * 8f;
-                            var newPos = target.transform.position + offset;
-                            newPos.y = target.transform.position.y;  // keep ground level
-                            go.transform.position = newPos;
-                            Plugin.Log.LogWarning($"[StillLife] Watchdog TELEPORTED stuck clone to {newPos:F1} (was at {curPos:F1}, stuck for {now - prev.time:F1}s).");
-                            _stuck[id] = (newPos, now);
+                            Vector3 landing = target.transform.position;
+                            bool onMesh = NavMesh.SamplePosition(target.transform.position,
+                                out var navHit, 18f, NavMesh.AllAreas);
+                            if (onMesh) landing = navHit.position;
+
+                            var navAgent = ai.agent;
+                            if (onMesh && navAgent != null && navAgent.isActiveAndEnabled && navAgent.enabled)
+                            {
+                                try { navAgent.Warp(landing); }
+                                catch { go.transform.position = landing; }
+                            }
+                            else
+                            {
+                                go.transform.position = landing;
+                            }
+                            Plugin.Log.LogWarning($"[StillLife] Watchdog recovered a stuck clone onto walkable ground at {landing:F1} (was stuck at {curPos:F1} for {now - prev.time:F1}s).");
+                            _stuck[id] = (landing, now);
                             continue;
                         }
                     }
