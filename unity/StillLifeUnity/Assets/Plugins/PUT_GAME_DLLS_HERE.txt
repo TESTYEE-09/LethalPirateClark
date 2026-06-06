@@ -1,0 +1,49 @@
+PUT THE GAME'S MANAGED DLLs IN THIS FOLDER
+===========================================
+
+The build script needs Lethal Company's own types (EnemyType, EnemyAI,
+TerminalNode, ...). Those live in the game files on your PC — they can't ship
+with this project (copyrighted). One-time copy:
+
+WHERE THE GAME DLLs ARE
+-----------------------
+Steam → Lethal Company → right-click → Manage → Browse local files, then:
+    Lethal Company\Lethal Company_Data\Managed\
+
+RECOMMENDED (publicized) — lets the build set every field:
+  Generate a publicized Assembly-CSharp using one of:
+    • BepInEx AssemblyPublicizer, or
+    • https://github.com/elliotttate/Bepinex-Tools (Assembly Publicizer), or
+    • the NuGet 'LethalCompany.GameLibs.Steam' reference DLL (already publicized)
+  …and drop the resulting Assembly-CSharp.dll here.
+
+MINIMUM TO COPY HERE
+--------------------
+  Assembly-CSharp.dll            (publicized strongly recommended)
+
+IF "EnemyType not found" OR types fail to load, also copy these game-only deps
+(do NOT copy UnityEngine*.dll / System*.dll / mscorlib — the editor has them):
+  Assembly-CSharp-firstpass.dll
+  ClientNetworkTransform.dll        (if present)
+  DunGen.dll
+  Facepunch.Steamworks.Win64.dll
+  Newtonsoft.Json.dll               (only if a load error names it)
+
+NETCODE / HDRP
+--------------
+This project's Packages/manifest.json already pins:
+  com.unity.netcode.gameobjects 1.5.2   (the version the game ships)
+  com.unity.render-pipelines.high-definition 14.0.8
+So do NOT copy Unity.Netcode.Runtime.dll / Unity.Netcode.Components.dll here —
+the package provides them and a second copy would conflict.
+
+AFTER COPYING
+-------------
+  1. Switch back to Unity; let it recompile (no red errors in the Console).
+  2. Run menu:  StillLife ▸ Build Everything
+  3. Grab  AssetBundles/stilllife  and drop it next to com.yourname.stilllife.dll.
+
+ALTERNATIVE (bulletproof): if dependency-resolution gives you trouble, start from
+Evaisa's prebuilt "LethalCompany Unity template" (it bundles the netcode patcher
+and the right DLL layout), then copy Assets/Editor/StillLifeBuilder.cs and
+Assets/StillLife/StillLife.fbx into it and run the same menu.
