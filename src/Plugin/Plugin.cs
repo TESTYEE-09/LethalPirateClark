@@ -13,13 +13,13 @@ using UnityEngine.AI;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.1.1")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.1.2")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "1.1.1";
+    public const string Version = "1.1.2";
 
     internal static ManualLogSource Log = null!;
 
@@ -127,6 +127,17 @@ public class Plugin : BaseUnityPlugin
         var root = new GameObject("StillLifeEnemy");
         root.SetActive(false);
         root.transform.position = Vector3.zero;
+
+        // CRITICAL: this GameObject is our prefab TEMPLATE — the game clones it
+        // every time it spawns Pirate Clark. A plain scene GameObject gets
+        // destroyed by Unity on the menu->moon scene transition, which left
+        // enemyType.enemyPrefab pointing at a destroyed object: LethalLib's
+        // Terminal_Start NRE'd on it and RoundManager had nothing to instantiate
+        // (Oracle kept *picking* the enemy but it never actually spawned).
+        // DontDestroyOnLoad keeps the template alive across scene loads; the
+        // hide flags keep it out of the menu scene render + out of saves.
+        root.hideFlags = HideFlags.HideAndDontSave;
+        UnityEngine.Object.DontDestroyOnLoad(root);
 
         // --- Visual: real Pirate Clark mesh from the embedded .obj ---
         var mesh = ObjMeshLoader.LoadEmbedded("LethalPirateClark.pirate_clark.obj");
