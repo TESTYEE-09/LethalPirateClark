@@ -58,17 +58,20 @@ internal static class ObjMeshLoader
             if (c0 != 'v' && c0 != 'f' && c0 != 's') continue;
             char c1 = line.Length > 1 ? line[1] : ' ';
 
+            // NOTE: startIdx is an index into the whitespace-split token array,
+            // where the directive ("v"/"vt"/"vn") is token 0 and the numbers
+            // start at token 1 — NOT a character offset into the line.
             if (c0 == 'v' && c1 == ' ')
             {
-                if (TryReadVec3(line, 2, out var v)) positions.Add(v);
+                if (TryReadVec3(line, 1, out var v)) positions.Add(v);
             }
             else if (c0 == 'v' && c1 == 't')
             {
-                if (TryReadVec2(line, 3, out var v)) uvs.Add(v);
+                if (TryReadVec2(line, 1, out var v)) uvs.Add(v);
             }
             else if (c0 == 'v' && c1 == 'n')
             {
-                if (TryReadVec3(line, 3, out var v)) normals.Add(v);
+                if (TryReadVec3(line, 1, out var v)) normals.Add(v);
             }
             else if (c0 == 'f' && c1 == ' ')
             {
