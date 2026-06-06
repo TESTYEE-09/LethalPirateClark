@@ -17,9 +17,20 @@ namespace StillLife.Patches;
 [HarmonyPatch(typeof(RoundManager), nameof(RoundManager.SpawnEnemyGameObject))]
 internal static class SpawnActivatePatch
 {
+    private static bool _loggedFirstCall;
+
     [HarmonyPostfix]
     private static void Postfix(NetworkObjectReference __result)
     {
+        // One-time confirmation that the vanilla spawn path is actually being
+        // used (some mods bypass it). If this never logs, the watchdog is doing
+        // all the work.
+        if (!_loggedFirstCall)
+        {
+            _loggedFirstCall = true;
+            Plugin.Log.LogInfo("[StillLife] SpawnEnemyGameObject postfix is live (vanilla spawn path in use).");
+        }
+
         if (!__result.TryGet(out NetworkObject netObj)) return;
 
         // includeInactive: true — the root is inactive, so a normal search misses it.
