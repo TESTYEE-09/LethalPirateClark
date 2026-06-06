@@ -2,6 +2,22 @@
 
 All notable changes to LethalPirateClark are documented in this file. Dates are YYYY-MM-DD.
 
+## [1.0.3] - 2026-06-06
+
+### The big one
+- **Pirate Clark was *never* spawning — not because of any v1.0.1/v1.0.2 issue, but because the Mac Unity build of the `stilllife` asset bundle was being written corrupt.** `AssetBundle.LoadFromFile` AND `LoadFromMemory` both return NULL, even on the same Mac editor that built the bundle. This was a silent failure: the mod DLL loaded, `LoadFromFile` returned NULL, `LoadAsset<EnemyType>` was never called, the enemy was never registered, and the debug menu never listed it. Every version from v1.0.0 onward has had this bug.
+- **v1.0.3 ditches the asset bundle entirely.** The C# DLL now builds the `EnemyType` ScriptableObject and the enemy prefab entirely in code at runtime, against the actual Windows game types. No Unity editor required, no Mac-vs-Windows type-tree hash games, no silent field-drop bugs. The mod is now fully self-contained in the DLL.
+- **Visual: procedural placeholder.** A capsule body (dark brown "pirate coat"), a flattened cube on top (tricorn hat), a thin cube at the waist (belt). Built from `GameObject.CreatePrimitive` calls at runtime. Looks like a placeholder but is unambiguously "pirate-shaped" and moves correctly. The real model source (`PirateClark.fbx`) is preserved in `model-source/` for a future runtime FBX loader to use.
+- **Audio: silent.** The `AudioSource` components are wired so a future drop-in of `PC_ambient.wav` + `PC_eat.wav` is a single-line change, but no clips ship with v1.0.3.
+- **Bundle file removed from the install.** The `dist/LethalPirateClark_v1.0.3.zip` is now 327 KB (was 1.4 MB) — just the DLL, manifest, icon, and README. The `plugins/StillLife/` folder no longer contains a `stilllife` file. If you're upgrading from v1.0.0/1.0.1/1.0.2, **delete the old `stilllife` file** in your install (it's corrupt anyway).
+
+### Fixed
+- The v1.0.2 runtime `ForceEnemyTypeOverrides()` is no longer needed (there was no bundle to worry about a type-tree mismatch on). Removed.
+
+### Files
+- New: `src/Plugin/Plugin.cs` rewritten — `BuildPiratePrefab()` (procedural mesh), `BuildEnemyType()` (runtime ScriptableObject), `ResolveType()` / `TrySetField()` / `TrySetProperty()` helpers
+- New: `unity/StillLifeUnity/Assets/Editor/StillLifeDebugLoad.cs` — diagnostic that proved the v1.0.2 bundle was corrupt. Kept in case the bundle approach is revisited.
+
 ## [1.0.2] - 2026-06-06
 
 ### Fixed
