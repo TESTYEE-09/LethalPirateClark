@@ -2,6 +2,16 @@
 
 All notable changes to LethalPirateClark are documented in this file. Dates are YYYY-MM-DD.
 
+## [1.3.3] - 2026-06-06
+
+### Root-cause fix: template activation is now deferred until after RoundManager.Instance is up
+- **v1.3.1 and v1.3.2 NRE'd at startup because `Plugin.Awake()` runs during `BepInEx.Chainloader.Start()`** — *before* the game's `RoundManager.Instance` singleton is constructed. v1.3.1/v1.3.2 both called `prefab.SetActive(true)` from that `Awake`, which fired `EnemyAI.Awake()`. The first line of `EnemyAI.Awake()` in v81 is `thisEnemyIndex = RoundManager.Instance.numberOfEnemiesInScene;` — with `RoundManager.Instance == null`, that NREs. The template's components ended up in a broken state, clones inherited it, and `Start()` never ran the AI setup. The watchdog eventually saw 1 clone (v1.3.2 log line 1259) but no `CLONE FINGERPRINT` line ever fired because `Start()` was never called on the broken template.
+- v1.3.3 stops calling `SetActive(true)` in `BuildEnemyAtRuntime`. Instead, a hidden `ActivationRunner` MonoBehaviour waits for the first scene load (up to 5s), polls for `RoundManager.Instance != null`, then activates the template. With RoundManager up, `EnemyAI.Awake()` runs cleanly, the template's components initialize normally, and clones inherit a healthy state.
+- **Audio fix:** `voiceSource.spatialBlend` forced to 0 (pure 2D) in `Start()` so the ambient loop is audible from anywhere on the map. Volume bumped to 1.0. The previous 3D-positional setup (minDist=4, maxDist=32) made the loop inaudible when the clone spawned far from the player — the "no sound" symptom.
+- **Scale fix:** the watchdog now forces `localScale = (1.25, 1.25, 1.25)` on every clone whose scale is wrong, every pass. Even if the spawn pipeline resets scale on `Instantiate`, the watchdog re-applies it. The "small" symptom.
+- **Resilient Start():** added an `else` branch when `agent` is null (`Plugin.Log.LogWarning("[StillLife] agent is null on this clone...")`) and a `voiceSource.Play()` confirmation log line. The fingerprint log still fires on every clone regardless of agent state.
+- **No new features.** Same NRE fix and hash set remain. Same model, same embedded WAVs, same 1.25× scale target.
+
 ## [1.3.2] - 2026-06-06
 
 ### Diagnostic build — Pirate Clark still floats, doesn't move, no sound, no scale after v1.3.1

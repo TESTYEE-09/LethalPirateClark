@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -13,13 +14,13 @@ using UnityEngine.AI;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.3.2")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.3.3")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "1.3.2";
+    public const string Version = "1.3.3";
 
     internal static ManualLogSource Log = null!;
 
@@ -34,6 +35,13 @@ public class Plugin : BaseUnityPlugin
     // Tracks how many Still Lifes are alive so player-conversion can't snowball
     // the level into a swarm. Maintained by the StillLifeAI lifecycle.
     internal static int LiveStillLives;
+
+    // v1.3.3: the prefab template is built inactive and activated only after
+    // the first scene loads (when RoundManager.Instance is non-null). Until
+    // then, this holds the reference so the sceneLoaded callback can pick
+    // it up. Set to null after activation completes.
+    private GameObject? _templatePendingActivation;
+    private bool _templateActivated;
 
     private readonly Harmony _harmony = new(Guid);
 
@@ -104,14 +112,27 @@ public class Plugin : BaseUnityPlugin
         var enemy = BuildEnemyType(prefab);
         Log.LogInfo($"[StillLife] EnemyType built: '{enemy.enemyName}', PowerLevel={enemy.PowerLevel}, MaxCount={enemy.MaxCount}");
 
-        // --- 2b. Activate the template ---
-        // BuildEnemyType just assigned `enemyType` to the prefab's AI component.
-        // Now it's safe to activate — EnemyAI.Awake() (which reads enemyType)
-        // will run with enemyType already set, so no NRE. Netcode clones an
-        // ACTIVE template with enabled NetworkBehaviours, so clones get proper
-        // ownership (IsOwner/IsServer) and the AI loop runs.
-        prefab.SetActive(true);
-        Log.LogInfo("[StillLife] Template activated (enemyType is set, Awake() will not NRE).");
+        // --- 2b. Activate the template (DEFERRED to first scene load) ---
+        // v1.3.1's mistake: we called SetActive(true) here, in Plugin.Awake(),
+        // which runs from BepInEx.Chainloader.Start() — *before* the game's
+        // RoundManager.Instance singleton exists. EnemyAI.Awake() does
+        // `thisEnemyIndex = RoundManager.Instance.numberOfEnemiesInScene;`
+        // (verified by decompiling v81's EnemyAI). With RoundManager.Instance
+        // == null, the very first line of EnemyAI.Awake NREs, leaving the
+        // template's components in a broken state. Clones inherit the broken
+        // state, so Spawn() succeeds but Start() never runs the AI setup.
+        //
+        // v1.3.3 fix: do NOT call SetActive(true) here. Register a hook on
+        // SceneManager.sceneLoaded and activate the template inside the
+        // callback (after waiting a frame so RoundManager is up). The
+        // template stays inactive until sceneLoaded fires; LethalLib's
+        // RegisterNetworkPrefab only needs the NetworkObject + hash to be
+        // set, which BuildPiratePrefab already did. Clones come in inactive
+        // but the watchdog will activate them after the spawn pipeline puts
+        // them in a scene.
+        Log.LogInfo("[StillLife] Template build complete. Will activate on first scene load (when RoundManager is up).");
+        _templatePendingActivation = prefab;
+        UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoadedActivateTemplate;
 
         // --- 2c. Startup fingerprint (v1.3.2 diagnostic) ---
         // Read back the template's state so a v1.3.2 log can identify which
@@ -513,5 +534,80 @@ public class Plugin : BaseUnityPlugin
         var t = obj.GetType();
         var p = t.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
         if (p != null && p.CanWrite) { try { p.SetValue(obj, value, null); } catch (Exception e) { Log.LogWarning($"[StillLife] Set prop {name} failed: {e.Message}"); } }
+    }
+
+    // v1.3.3: deferred template activation. Hooks SceneManager.sceneLoaded
+    // and activates the template on the first scene that has RoundManager
+    // ready. We can't activate at Plugin.Awake() time because RoundManager
+    // singleton is null until a scene with the game loaded runs Awake on
+    // its own components, and EnemyAI.Awake NREs without it.
+    private void OnSceneLoadedActivateTemplate(UnityEngine.SceneManagement.Scene scene,
+        UnityEngine.SceneManagement.LoadSceneMode mode)
+    {
+        if (_templateActivated) return;
+        if (_templatePendingActivation == null) return;
+
+        // The MainMenu scene doesn't have RoundManager. We want the Game scene
+        // (the one where the spawn pipeline lives). It's loaded once the host
+        // starts. We can detect it by scene name OR by waiting until
+        // RoundManager.Instance is non-null. The latter is more robust — it
+        // doesn't depend on a specific scene name and works across game
+        // versions that may rename things.
+        //
+        // We attach a one-shot coroutine on a hidden GameObject so we can
+        // wait a frame (RoundManager's own Awake runs during scene load).
+        var runnerGo = new GameObject("StillLifeActivationRunner") { hideFlags = HideFlags.HideAndDontSave };
+        UnityEngine.Object.DontDestroyOnLoad(runnerGo);
+        var runner = runnerGo.AddComponent<ActivationRunner>();
+        runner.StartCoroutine(runner.ActivateTemplateWhenReady(this, _templatePendingActivation,
+            onActivated: (prefab) => {
+                _templatePendingActivation = null;
+                _templateActivated = true;
+                UnityEngine.SceneManagement.SceneManager.sceneLoaded -= OnSceneLoadedActivateTemplate;
+            }));
+    }
+}
+
+// v1.3.3: a tiny MonoBehaviour that runs a coroutine to activate the
+// template once RoundManager.Instance is non-null. We can't do this inline
+// in Plugin because BepInEx's BaseUnityPlugin doesn't expose a coroutine
+// runner directly (we'd need a hidden GameObject anyway, so this is the
+// same GameObject with one component instead of three).
+internal class ActivationRunner : MonoBehaviour
+{
+    public IEnumerator ActivateTemplateWhenReady(Plugin plugin, GameObject prefab, Action<GameObject> onActivated)
+    {
+        // Wait up to 5 seconds for RoundManager.Instance to be non-null.
+        // RoundManager is a DontDestroyOnLoad singleton; its Awake runs
+        // when the Game scene loads.
+        float deadline = Time.realtimeSinceStartup + 5f;
+        while (RoundManager.Instance == null && Time.realtimeSinceStartup < deadline)
+        {
+            yield return null;
+        }
+
+        if (RoundManager.Instance == null)
+        {
+            Plugin.Log.LogWarning("[StillLife] RoundManager.Instance still null after 5s — activating template anyway and hoping for the best.");
+        }
+        else
+        {
+            Plugin.Log.LogInfo($"[StillLife] RoundManager.Instance is up; activating template (scene='{UnityEngine.SceneManagement.SceneManager.GetActiveScene().name}').");
+        }
+
+        try
+        {
+            prefab.SetActive(true);
+            Plugin.Log.LogInfo("[StillLife] Template activated successfully (v1.3.3 deferred activation).");
+        }
+        catch (System.Exception ex)
+        {
+            Plugin.Log.LogError($"[StillLife] Template activation threw: {ex.GetType().Name}: {ex.Message}");
+            Plugin.Log.LogError($"[StillLife] Stack: {ex.StackTrace}");
+        }
+
+        onActivated(prefab);
+        // Self-destruct the runner GameObject.
+        Destroy(gameObject);
     }
 }

@@ -75,7 +75,20 @@ public class StillLifeAI : EnemyAI
             // v1.0.4: log exactly where we spawned so the user can find us.
             Plugin.Log.LogInfo($"[StillLife] Pirate Clark SPAWNED at {transform.position:F1} (round time {StartOfRound.Instance?.currentLevel?.name ?? "unknown"}). LiveStillLives={Plugin.LiveStillLives}");
 
-            // v1.3.2 diagnostic: one comprehensive line per clone with every
+            // v1.3.3: force the voice source to 2D audio so it's audible from
+            // anywhere on the map. The previous 3D positional setup (minDist=4,
+            // maxDist=32) made the ambient loop inaudible when the clone
+            // spawned far from the player. We keep the AudioListener-aware
+            // settings but kill the spatial blend so volume is constant.
+            if (voiceSource != null)
+            {
+                voiceSource.spatialBlend = 0f;  // pure 2D
+                voiceSource.minDistance = 0f;
+                voiceSource.maxDistance = 500f;
+                voiceSource.volume = 1f;
+            }
+
+            // v1.3.3 diagnostic: one comprehensive line per clone with every
             // field that could explain "floats, doesn't move, no sound, small".
             if (!_startLogged)
             {
@@ -117,10 +130,17 @@ public class StillLifeAI : EnemyAI
                     }
                 }
             }
+            else
+            {
+                Plugin.Log.LogWarning("[StillLife] agent is null on this clone — NavMeshAgent failed to attach. AI cannot move.");
+            }
 
             // Begin the looping ambient entity sound.
             if (voiceSource != null && voiceSource.clip != null && !voiceSource.isPlaying)
+            {
                 voiceSource.Play();
+                Plugin.Log.LogInfo($"[StillLife] voiceSource.Play() called. isPlaying={voiceSource.isPlaying}");
+            }
         }
         catch (System.Exception ex)
         {

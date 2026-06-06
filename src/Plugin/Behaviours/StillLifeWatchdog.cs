@@ -52,6 +52,19 @@ internal class StillLifeWatchdog : MonoBehaviour
                 Plugin.Log.LogInfo($"[StillLife] Watchdog ACTIVATED a Pirate Clark clone at {go.transform.position:F1} (was inactive).");
             }
 
+            // v1.3.3: force the 1.25x scale on every clone, every watchdog pass.
+            // The template's localScale is set to 1.25 in BuildPiratePrefab, but
+            // the spawn pipeline (or NGO's NetworkTransform init) may reset it
+            // on Instantiate. Re-apply it unconditionally so the model is the
+            // right size no matter what.
+            var s = go.transform.localScale;
+            if (Mathf.Abs(s.x - 1.25f) > 0.01f ||
+                Mathf.Abs(s.y - 1.25f) > 0.01f ||
+                Mathf.Abs(s.z - 1.25f) > 0.01f)
+            {
+                go.transform.localScale = new Vector3(1.25f, 1.25f, 1.25f);
+            }
+
             // v1.3.2 per-clone diagnostic: log a one-liner only when the
             // clone's state is non-default (inactive, scale != 1.25,
             // parented to the template, NetworkObject.IsSpawned == false).
