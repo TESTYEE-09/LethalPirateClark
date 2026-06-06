@@ -55,6 +55,27 @@ public class StillLifeAI : EnemyAI
             Plugin.LiveStillLives++;
             // v1.0.4: log exactly where we spawned so the user can find us.
             Plugin.Log.LogInfo($"[StillLife] Pirate Clark SPAWNED at {transform.position:F1} (round time {StartOfRound.Instance?.currentLevel?.name ?? "unknown"}). LiveStillLives={Plugin.LiveStillLives}");
+
+            // Make sure the NavMeshAgent is actually on a NavMesh, or he can't
+            // move at all (and the game logs nothing). Snap to the nearest mesh
+            // point if the spawn dropped him just off it; warn if there's no
+            // NavMesh nearby (e.g. spawned on the ship rather than the facility).
+            if (agent != null)
+            {
+                if (!agent.isOnNavMesh)
+                {
+                    if (NavMesh.SamplePosition(transform.position, out var hit, 20f, NavMesh.AllAreas))
+                    {
+                        agent.Warp(hit.position);
+                        Plugin.Log.LogInfo($"[StillLife] Snapped onto NavMesh at {hit.position:F1}.");
+                    }
+                    else
+                    {
+                        Plugin.Log.LogWarning("[StillLife] No NavMesh within 20m of spawn — Pirate Clark can't path here.");
+                    }
+                }
+                Plugin.Log.LogInfo($"[StillLife] agent.isOnNavMesh={agent.isOnNavMesh}, enabled={agent.enabled}, IsOwner={IsOwner}, IsServer={IsServer}.");
+            }
         }
         catch (System.Exception ex)
         {

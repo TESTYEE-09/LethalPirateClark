@@ -13,13 +13,13 @@ using UnityEngine.AI;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.2.1")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.2.2")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "1.2.1";
+    public const string Version = "1.2.2";
 
     internal static ManualLogSource Log = null!;
 
@@ -165,18 +165,37 @@ public class Plugin : BaseUnityPlugin
         var mr = root.AddComponent<MeshRenderer>();
         var shader = Shader.Find("HDRP/Lit") ?? Shader.Find("Standard");
         var mat = new Material(shader) { name = "PirateClarkMat" };
+
+        // Load the real PBR maps (embedded PNGs). Albedo carries the coat
+        // colours; normal map adds surface detail. Fall back to a flat mustard
+        // tint only if the textures fail to load.
+        var albedo = TextureLoader.LoadEmbedded("LethalPirateClark.pirate_clark_albedo.png");
+        var normal = TextureLoader.LoadEmbedded("LethalPirateClark.pirate_clark_normal.png", linear: true);
+        var fallbackMustard = new Color(0.75f, 0.65f, 0.20f);
+
         if (shader.name == "HDRP/Lit")
         {
-            // PirateClark's coat is mustard-yellow with teal sleeves and a
-            // black mask/hat. We tint the whole model as the coat color
-            // (mid mustard) — it's a single uniform color but recognizable.
-            // v1.2.0 will load the actual texture map.
-            mat.SetColor("_BaseColor", new Color(0.75f, 0.65f, 0.20f));  // mustard yellow
-            mat.SetFloat("_Smoothness", 0.4f);
+            if (albedo != null)
+            {
+                mat.SetTexture("_BaseColorMap", albedo);
+                mat.SetColor("_BaseColor", Color.white);  // white so the texture shows true
+            }
+            else
+            {
+                mat.SetColor("_BaseColor", fallbackMustard);
+            }
+            if (normal != null)
+            {
+                mat.SetTexture("_NormalMap", normal);
+                mat.EnableKeyword("_NORMALMAP");
+                mat.SetFloat("_NormalScale", 1f);
+            }
+            mat.SetFloat("_Smoothness", 0.35f);
         }
         else
         {
-            mat.color = new Color(0.75f, 0.65f, 0.20f);
+            if (albedo != null) { mat.mainTexture = albedo; mat.color = Color.white; }
+            else mat.color = fallbackMustard;
         }
         // Find the first material slot to assign to. Some renderers expect
         // an array; the built-in HDRP/Lit material we created has slot 0.
