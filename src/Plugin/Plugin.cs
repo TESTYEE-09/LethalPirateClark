@@ -13,13 +13,13 @@ using UnityEngine.AI;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.3.0")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.3.1")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "1.3.0";
+    public const string Version = "1.3.1";
 
     internal static ManualLogSource Log = null!;
 
@@ -103,6 +103,15 @@ public class Plugin : BaseUnityPlugin
         // --- 2. Build the EnemyType ScriptableObject ---
         var enemy = BuildEnemyType(prefab);
         Log.LogInfo($"[StillLife] EnemyType built: '{enemy.enemyName}', PowerLevel={enemy.PowerLevel}, MaxCount={enemy.MaxCount}");
+
+        // --- 2b. Activate the template ---
+        // BuildEnemyType just assigned `enemyType` to the prefab's AI component.
+        // Now it's safe to activate — EnemyAI.Awake() (which reads enemyType)
+        // will run with enemyType already set, so no NRE. Netcode clones an
+        // ACTIVE template with enabled NetworkBehaviours, so clones get proper
+        // ownership (IsOwner/IsServer) and the AI loop runs.
+        prefab.SetActive(true);
+        Log.LogInfo("[StillLife] Template activated (enemyType is set, Awake() will not NRE).");
 
         // --- 3. Register the network prefab (best-effort) ---
         try
@@ -258,7 +267,24 @@ public class Plugin : BaseUnityPlugin
         var networkObjectT = System.Type.GetType("Unity.Netcode.NetworkObject, Unity.Netcode.Runtime");
         if (networkObjectT != null)
         {
-            root.AddComponent(networkObjectT);
+            var netObjComp = root.AddComponent(networkObjectT);
+            // A NetworkObject created at runtime has GlobalObjectIdHash == 0
+            // (it's normally baked at editor build time). Netcode can't spawn a
+            // prefab whose hash isn't registered, so Spawn() silently fails and
+            // the clone never gets ownership — IsOwner/IsServer stay false and
+            // the AI never runs. Assign a stable non-zero hash so the prefab
+            // registers and Spawn() can resolve it.
+            var hashField = networkObjectT.GetField("GlobalObjectIdHash",
+                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            if (hashField != null)
+            {
+                hashField.SetValue(netObjComp, (uint)0x5111C1A4);  // stable, "StillClark"
+                Log.LogInfo("[StillLife] Set NetworkObject.GlobalObjectIdHash on the runtime prefab.");
+            }
+            else
+            {
+                Log.LogWarning("[StillLife] GlobalObjectIdHash field not found — network spawn may fail.");
+            }
         }
         else
         {
@@ -318,10 +344,13 @@ public class Plugin : BaseUnityPlugin
             Log.LogError("[StillLife] EnemyAICollisionDetect type not found — enemy won't detect player collisions.");
         }
 
-        // All components are in place — switch the template ON so Netcode can
-        // clone it as an ACTIVE object with enabled NetworkBehaviours.
-        root.SetActive(true);
-
+        // NOTE: do NOT SetActive(true) here. The template is returned in an
+        // inactive state, and BuildEnemyAtRuntime activates it AFTER assigning
+        // `enemyType` to the AI component. If we activate here, EnemyAI.Awake()
+        // runs while `enemyType` is still null and NREs — leaving the template's
+        // components in a broken state, which clones inherit (this was the
+        // v1.3.0 bug that caused "Pirate Clark is floating, doesn't move,
+        // no sound").
         return root;
     }
 

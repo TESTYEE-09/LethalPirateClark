@@ -2,6 +2,24 @@
 
 All notable changes to LethalPirateClark are documented in this file. Dates are YYYY-MM-DD.
 
+## [1.3.1] - 2026-06-06
+
+### Movement fix completed
+- **The "doesn't move" bug is finally fixed for real.** v1.3.0 introduced the active-template trick (park the template at y=-8000 so clones inherit an active NetworkObject) plus a runtime-set `GlobalObjectIdHash`. v1.3.0 *partly* worked: clones were instantiated, the watchdog could see them, audio was loaded — but Pirate Clark still floated, didn't move, and made no sound. The v1.3.0 log showed `IsOwner=False, IsServer=False` on the spawned clone, plus `agent.isOnNavMesh=False`.
+- v1.3.0's `BuildPiratePrefab()` ended with `root.SetActive(true)`, which fired `EnemyAI.Awake()` while `enemyType` was still null (assigned later in `BuildEnemyType`). That threw a `NullReferenceException`, leaving the template's components in a broken state. Clones inherited the broken state, so their AI never ran.
+- v1.3.1 finishes what the previous session started: the template is now returned **inactive** from `BuildPiratePrefab()`, and `BuildEnemyAtRuntime()` activates it **after** `BuildEnemyType(prefab)` assigns `enemyType` to the AI. `EnemyAI.Awake()` now runs with `enemyType` set, no NRE, the template is healthy, clones are healthy, ownership is correct.
+- The `GlobalObjectIdHash` reflection set from the previous session's +18 edit is committed alongside it. Together: clone is active, NetworkObject hash is non-zero, LethalLib's `GameNetworkManager.Start` hook registers the prefab with NGO, `NetworkObject.Spawn()` resolves it, host is `IsOwner=True/IsServer=True`, AI runs.
+- **No new features.** Same 1.25× scale, same embedded WAVs (ambient + eat), same real Pirate Clark model. The four symptoms (floating, small, no sound, not moving) are all downstream of the broken-spawn root cause, so they should all clear with this fix.
+- Online co-op note: the same hash is set on the prefab on every peer (the mod's `Awake` runs on every BepInEx-loaded client), so both host and client should be able to resolve the prefab at spawn time.
+
+## [1.3.0] - 2026-06-06
+
+### He moves! + sound + bigger
+- **Movement:** the runtime-built prefab template is now activated *before* the game clones it (hidden by parking it at `y=-8000` instead of leaving it `SetActive(false)`), so clones are active objects with enabled `NetworkBehaviour`s. v1.2.x had the template inactive, so `NetworkObject.Spawn()` refused to network-spawn the clone — `IsOwner/IsServer` stayed false, `EnemyAI.Update` early-returned, agent never enabled, no movement. (v1.3.1 finishes this fix by also reordering activation past `enemyType` assignment — see [1.3.1] above.)
+- **Sound:** the ambient entity loop and the eat one-shot are decoded from embedded 16-bit PCM WAVs at runtime (`WavLoader.cs`); DLL grew to ~5.7 MB carrying audio + textures. AudioSources wire up at plugin load; the AI starts the loop on spawn.
+- **Size:** bumped 1.25× so the model reads taller. The lean is baked into the model's bind pose, so scaling makes him bigger but still leaning. Full upright requires re-posing the mesh in Blender.
+- **Watchdog:** `StillLifeWatchdog` now runs as a persistent `MonoBehaviour` and activates any Pirate Clark clone that comes in inactive, regardless of which mod's spawn pipeline created it. v1.2.0's single-method postfix wasn't reliable because other mods (e.g. Imperium) bypass `RoundManager.SpawnEnemyGameObject`.
+
 ## [1.1.0] - 2026-06-06
 
 ### The real model
