@@ -2,6 +2,15 @@
 
 All notable changes to LethalPirateClark are documented in this file. Dates are YYYY-MM-DD.
 
+## [1.3.4] - 2026-06-06
+
+### He actually moves now (manual transform movement + stuck-clone teleport)
+- v1.3.3's NavMeshAgent-driven movement was the wrong primary locomotion source. The agent fails to add at build time (Unity logs "Failed to create agent because there is no valid NavMesh" — the main menu has no NavMesh), and even when it does add, clones spawned off-mesh never get on one because Start's 20m `NavMesh.SamplePosition` warp may fail.
+- **v1.3.4's primary movement is `transform.position += normalizedToTarget * speed * dt`.** The clone walks toward the nearest live player no matter what — no NavMesh required, no agent required, no path required. The NavMeshAgent is still updated as a best-effort overlay (only if `agent != null && agent.isOnNavMesh`), so obstacle-aware behaviour is preserved when the agent is functional. The new manual movement is the source of truth.
+- **v1.3.4 also: stuck-clone teleport.** The watchdog now tracks each clone's last position. If a clone's transform hasn't moved in 3+ seconds, the watchdog teleports it to within 8m of a live player (random direction). This is the absolute fallback for "the AI is alive but the locomotion is broken" — better to break the illusion than to be non-functional.
+- **v1.3.4 also: `Freeze()` is null-safe.** The per-frame call from `Update()` to `agent.isStopped = value` and `agent.velocity = Vector3.zero` is now wrapped in null/try guards. The previous code would have NRE'd every frame when `agent` was null; the per-frame try/catch in Update() caught it but throttled the log, hiding the actual cause.
+- **No new features.** Same model, same audio, same 1.25× scale, same NRE fix and hash set, same deferred activation.
+
 ## [1.3.3] - 2026-06-06
 
 ### Root-cause fix: template activation is now deferred until after RoundManager.Instance is up

@@ -163,9 +163,6 @@ public class StillLifeAI : EnemyAI
 
         if (currentBehaviourStateIndex == (int)State.Dormant)
             SwitchState(State.Stalking);
-
-        if (!_frozen)
-            SetDestinationToPosition(_target.transform.position, checkForPath: false);
     }
 
     public override void Update()
@@ -178,9 +175,11 @@ public class StillLifeAI : EnemyAI
 
             bool seen = AnyPlayerSeesMe();
             bool freeze = Plugin.FreezeWhenWatched.Value && seen;
+            float currentSpeed;
             if (freeze)
             {
                 _unseenTime = 0f;
+                currentSpeed = 0f;
                 Freeze(true);
             }
             else
@@ -189,12 +188,54 @@ public class StillLifeAI : EnemyAI
                 // Only ramp the unseen-speed bonus while he's actually unseen;
                 // hold base speed when observed.
                 if (!seen) _unseenTime += Time.deltaTime;
+                currentSpeed = Mathf.Min(maxSpeed, baseSpeed + _unseenTime * accelPerSecondUnseen);
                 Freeze(false);
-                agent.speed = Mathf.Min(maxSpeed, baseSpeed + _unseenTime * accelPerSecondUnseen);
             }
 
             if (currentBehaviourStateIndex != (int)State.Dormant)
                 FlickerNearbyLights(active: !seen);
+
+            // === Manual movement (v1.3.4) ===
+            // v1.3.3's NavMeshAgent-driven movement could fail in several ways:
+            // (a) agent is null because AddComponent<NavMeshAgent> failed at
+            //     build time (no NavMesh in the main-menu scene);
+            // (b) agent is non-null but agent.isOnNavMesh is false on the clone
+            //     because the spawn point is off the NavMesh;
+            // (c) agent.path is empty because the spawn point is unreachable.
+            // In all three cases the enemy stays put. v1.3.4 drives the
+            // transform directly with MoveTowards, so the enemy ALWAYS moves
+            // when not frozen. The NavMeshAgent is still updated for the
+            // game's API compatibility (door knock patches, etc.) but it's
+            // not the source of truth for position.
+            if (IsServer && !_frozen && _target != null && currentSpeed > 0f)
+            {
+                Vector3 toTarget = _target.transform.position - transform.position;
+                toTarget.y = 0f;  // stay on the ground plane; no flying
+                float dist = toTarget.magnitude;
+                if (dist > 0.5f)
+                {
+                    Vector3 step = toTarget.normalized * currentSpeed * Time.deltaTime;
+                    if (step.magnitude > dist) step = toTarget;  // don't overshoot
+                    transform.position += step;
+                    // Face the target so he doesn't moonwalk.
+                    Vector3 lookDir = toTarget.normalized;
+                    if (lookDir.sqrMagnitude > 0.0001f)
+                    {
+                        Quaternion target = Quaternion.LookRotation(lookDir);
+                        transform.rotation = Quaternion.Slerp(transform.rotation, target, 10f * Time.deltaTime);
+                    }
+                }
+            }
+            else if (agent != null && agent.isActiveAndEnabled && agent.isOnNavMesh)
+            {
+                // Best-effort NavMeshAgent pathing as a backup for the
+                // obstacle-aware behaviour, only if it's on a NavMesh.
+                agent.speed = currentSpeed;
+                if (IsServer && _target != null && !_frozen)
+                {
+                    agent.SetDestination(_target.transform.position);
+                }
+            }
 
             if (IsServer && _target != null && !_frozen)
                 TryGrab();
@@ -336,9 +377,19 @@ public class StillLifeAI : EnemyAI
     {
         if (_frozen == value) return;
         _frozen = value;
-        agent.isStopped = value;
+        // v1.3.4: agent may be null (AddComponent<NavMeshAgent> failed at
+        // build time when no NavMesh was up). Guard both writes so the
+        // Freeze() call from Update() never throws — the per-frame try/catch
+        // would catch it but the throttle means we'd lose subsequent signal.
+        if (agent != null)
+        {
+            try { agent.isStopped = value; } catch { /* off-mesh, ignore */ }
+            if (value)
+            {
+                try { agent.velocity = Vector3.zero; } catch { /* off-mesh, ignore */ }
+            }
+        }
         creatureAnimator?.SetBool("frozen", value);
-        if (value) agent.velocity = Vector3.zero;
     }
 
     private bool AnyPlayerSeesMe()

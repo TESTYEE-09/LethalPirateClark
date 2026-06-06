@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using GameNetcodeStuff;
 using UnityEngine;
 
 namespace StillLife.Behaviours;
@@ -22,6 +25,12 @@ internal class StillLifeWatchdog : MonoBehaviour
     // the log every 0.5s. (h << 16) | (instanceID & 0xFFFF) — re-logs only
     // when the set of problems on this clone changes.
     private int _lastPerCloneKey;
+    // v1.3.4: per-clone stuck-detection state. If a clone's transform hasn't
+    // changed in 3 seconds, we assume it's stuck (agent not on NavMesh, or
+    // AI loop not running for whatever reason) and teleport it next to a
+    // live player. This is the absolute fallback for "enemy is alive but
+    // not moving" — better to break the illusion than to be non-functional.
+    private readonly Dictionary<int, (Vector3 pos, float time)> _stuck = new();
 
     private void Update()
     {
@@ -106,6 +115,51 @@ internal class StillLifeWatchdog : MonoBehaviour
                         $"scale={scale:F2} (expected 1.25), NetworkObject.IsSpawned={netSpawned}.");
                 }
             }
+
+            // v1.3.4: stuck-detection. If this clone's transform hasn't moved
+            // in 3+ seconds, the AI isn't running (or agent is off-mesh and
+            // the v1.3.4 manual movement isn't reaching its target). Find
+            // the nearest live player and teleport the clone to within 8m of
+            // them. We only do this once per stuck-episode (we clear the
+            // entry as soon as the clone moves) so we don't fight the AI.
+            int id = go.GetInstanceID();
+            Vector3 curPos = go.transform.position;
+            float now = Time.realtimeSinceStartup;
+            if (_stuck.TryGetValue(id, out var prev))
+            {
+                if (Vector3.Distance(curPos, prev.pos) < 0.25f)
+                {
+                    if (now - prev.time > 3f)
+                    {
+                        // Stuck for 3s. Teleport near the nearest player.
+                        var target = FindNearestLivePlayer();
+                        if (target != null)
+                        {
+                            // Pick a spot 8m from the player in a random
+                            // direction. Doesn't have to be on a NavMesh —
+                            // the manual movement in Update() will then
+                            // walk the rest of the way.
+                            var dir = UnityEngine.Random.insideUnitCircle.normalized;
+                            var offset = new Vector3(dir.x, 0f, dir.y) * 8f;
+                            var newPos = target.transform.position + offset;
+                            newPos.y = target.transform.position.y;  // keep ground level
+                            go.transform.position = newPos;
+                            Plugin.Log.LogWarning($"[StillLife] Watchdog TELEPORTED stuck clone to {newPos:F1} (was at {curPos:F1}, stuck for {now - prev.time:F1}s).");
+                            _stuck[id] = (newPos, now);
+                            continue;
+                        }
+                    }
+                }
+                else
+                {
+                    // Moved — clear the stuck marker.
+                    _stuck[id] = (curPos, now);
+                }
+            }
+            else
+            {
+                _stuck[id] = (curPos, now);
+            }
         }
 
         if (clones != _lastCloneCount)
@@ -114,6 +168,21 @@ internal class StillLifeWatchdog : MonoBehaviour
             Plugin.Log.LogInfo($"[StillLife] Watchdog: {clones} Pirate Clark clone(s) present (activated {activated} this pass). " +
                                "If this stays 0 while the enemy is 'spawned', the instance is never being instantiated (network-spawn issue).");
         }
+    }
+
+    private static PlayerControllerB? FindNearestLivePlayer()
+    {
+        if (StartOfRound.Instance == null) return null;
+        // We just need any live player. Pick the lowest playerClientId as a
+        // deterministic choice; the teleport target doesn't have to be the
+        // closest, just a real player.
+        PlayerControllerB? first = null;
+        foreach (var p in StartOfRound.Instance.allPlayerScripts)
+        {
+            if (p == null || !p.isPlayerControlled || p.isPlayerDead) continue;
+            if (first == null || p.playerClientId < first.playerClientId) first = p;
+        }
+        return first;
     }
 }
 
