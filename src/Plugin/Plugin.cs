@@ -1,4 +1,6 @@
+using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
@@ -7,16 +9,17 @@ using HarmonyLib;
 using LethalLib.Modules;
 using StillLife.Behaviours;
 using UnityEngine;
+using UnityEngine.AI;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.0.2")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.0.3")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "1.0.2";
+    public const string Version = "1.0.3";
 
     internal static ManualLogSource Log = null!;
 
@@ -51,231 +54,296 @@ public class Plugin : BaseUnityPlugin
         MaxStillLives = Config.Bind("Conversion", "MaxAlive", 4,
             "Hard cap on simultaneous Still Lifes so conversions can't snowball endlessly.");
 
-        LoadAssetsAndRegister();
+        try
+        {
+            BuildEnemyAtRuntime();
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogError($"[StillLife] BuildEnemyAtRuntime failed: {ex.GetType().Name}: {ex.Message}");
+            Log.LogError($"[StillLife] Stack: {ex.StackTrace}");
+            // Don't re-throw — the rest of BepInEx can keep working. Just the enemy
+            // won't spawn. Better than taking down the whole mod loader.
+        }
 
         _harmony.PatchAll(Assembly.GetExecutingAssembly());
         Log.LogInfo($"{Name} v{Version} loaded.");
     }
 
-    private void LoadAssetsAndRegister()
+    // Build the EnemyType + prefab ENTIRELY in C# at runtime. No asset bundle,
+    // no Unity editor required, no Mac-vs-Windows type-tree mismatch. This is
+    // the v1.0.3 architecture: the mod is self-contained.
+    //
+    // Visual: a capsule with a tricorn-shaped hat (cube) and a coat-coloured
+    // body. Looks like a placeholder but unrecognizable-as-a-cube. Better
+    // than a flat box, worse than the real model. Real model can be added
+    // back later via a runtime FBX loader.
+    //
+    // Audio: silent for now (no clip shipped). The eat SFX is a one-shot on
+    // the creatureSFX source; without it, no sound plays. Fine for v1.0.3.
+    private void BuildEnemyAtRuntime()
     {
-        // Asset bundle is built in the Unity Editor (see README) and shipped next
-        // to this DLL. Must contain an EnemyType SO "StillLifeEnemy" plus its
-        // prefab and the bestiary TerminalNode/Keyword.
-        string dir = Path.GetDirectoryName(Info.Location)!;
-        string bundlePath = Path.Combine(dir, "stilllife");
-        var bundle = AssetBundle.LoadFromFile(bundlePath);
-        if (bundle == null)
+        Log.LogInfo("[StillLife] === Building Pirate Clark at runtime ===");
+
+        // --- 1. Build the visual GameObject (the prefab's source) ---
+        var prefab = BuildPiratePrefab();
+        Log.LogInfo($"[StillLife] Prefab built: '{prefab.name}' with {prefab.GetComponentsInChildren<Component>(true).Length} components");
+
+        // --- 2. Build the EnemyType ScriptableObject ---
+        var enemy = BuildEnemyType(prefab);
+        Log.LogInfo($"[StillLife] EnemyType built: '{enemy.enemyName}', PowerLevel={enemy.PowerLevel}, MaxCount={enemy.MaxCount}");
+
+        // --- 3. Register the network prefab (best-effort) ---
+        try
         {
-            Log.LogError($"Could not load asset bundle at '{bundlePath}'. " +
-                         "Enemy will NOT spawn. Build it in Unity first.");
-            return;
+            NetworkPrefabs.RegisterNetworkPrefab(prefab);
+        }
+        catch (System.Exception npEx)
+        {
+            Log.LogWarning($"[StillLife] NetworkPrefabs.RegisterNetworkPrefab failed (non-fatal): {npEx.Message}");
         }
 
-        var enemy = bundle.LoadAsset<EnemyType>("StillLifeEnemy");
-        var node = bundle.LoadAsset<TerminalNode>("StillLifeFile");
-        var keyword = bundle.LoadAsset<TerminalKeyword>("StillLifeKeyword");
+        // --- 4. Register with LethalLib ---
+        // No TerminalNode/TerminalKeyword — they're optional, the enemy still
+        // spawns without a bestiary entry. We can add them later if needed.
+        Enemies.RegisterEnemy(
+            enemy,
+            SpawnWeight.Value,
+            Levels.LevelTypes.All,
+            Enemies.SpawnType.Default,
+            null,
+            null);
 
-        if (enemy == null)
+        Log.LogInfo($"[StillLife] Registered '{enemy.enemyName}' — rarity {SpawnWeight.Value}, max alive {SpawnMaxCount.Value}.");
+    }
+
+    // Build the visual + functional prefab entirely from primitive GameObjects.
+    // Adds: NavMeshAgent, NetworkObject, NetworkTransform, AudioSource, Animator
+    // (Unity engine), the AI script, EnemyAICollisionDetect (game script).
+    private GameObject BuildPiratePrefab()
+    {
+        // Root: an empty GameObject (no visible mesh itself).
+        var root = new GameObject("StillLifeEnemy");
+        root.SetActive(false);  // Hide the template prefab from the scene.
+        // NOTE: Do NOT mark as DontDestroyOnLoad — that's the loader's job.
+
+        // Position at origin (the spawner will move the actual instance).
+        root.transform.position = Vector3.zero;
+
+        // --- Visual: capsule body + a flat "tricorn" cube on top ---
+        // Body: capsule, dark "pirate coat" color
+        var body = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+        body.name = "Body";
+        UnityEngine.Object.DestroyImmediate(body.GetComponent<Collider>());  // we add our own
+        body.transform.SetParent(root.transform, false);
+        body.transform.localPosition = new Vector3(0, 1.0f, 0);
+        body.transform.localScale = new Vector3(0.5f, 0.6f, 0.5f);  // thinner
+        var bodyRenderer = body.GetComponent<Renderer>();
+        if (bodyRenderer != null)
         {
-            Log.LogError("Bundle loaded but 'StillLifeEnemy' EnemyType was not found.");
-            return;
+            // Try HDRP first (Lethal Company uses HDRP), fall back to Standard.
+            Shader shader = Shader.Find("HDRP/Lit") ?? Shader.Find("Standard");
+            var mat = new Material(shader) { name = "PirateCoatMat" };
+            if (shader.name == "HDRP/Lit")
+            {
+                mat.SetColor("_BaseColor", new Color(0.25f, 0.15f, 0.10f));  // dark brown
+                mat.SetFloat("_Smoothness", 0.3f);
+            }
+            else
+            {
+                mat.color = new Color(0.25f, 0.15f, 0.10f);
+            }
+            bodyRenderer.sharedMaterial = mat;
         }
 
-        // --- RUNTIME OVERRIDE of EnemyType fields ---
-        // The EnemyType is serialized into the bundle by the Mac Unity build
-        // (because we don't have Windows Build Support). When the Windows
-        // game deserializes it, the type tree hash mismatches and any field
-        // whose type signature disagrees between Mac and Windows is silently
-        // dropped to its default. The critical one is PowerLevel: if it
-        // drops to 0, the enemy takes 0 power budget and is never picked
-        // by the spawner's weighted random draw, even with rarity=200.
-        //
-        // We set every spawn-critical field at runtime via reflection so
-        // the values are written against the Windows type tree, not the
-        // Mac one. This is robust regardless of bundle build origin.
-        Log.LogInfo($"[StillLife] EnemyType loaded: name='{enemy.enemyName}' " +
-                   $"PowerLevel={enemy.PowerLevel} MaxCount={enemy.MaxCount} " +
-                   $"isOutside={enemy.isOutsideEnemy} isDaytime={enemy.isDaytimeEnemy} " +
-                   $"spawningDisabled={enemy.spawningDisabled}");
-        ForceEnemyTypeOverrides(enemy);
-        Log.LogInfo($"[StillLife] EnemyType AFTER overrides: " +
-                   $"PowerLevel={enemy.PowerLevel} MaxCount={enemy.MaxCount} " +
-                   $"isOutside={enemy.isOutsideEnemy} isDaytime={enemy.isDaytimeEnemy} " +
-                   $"spawningDisabled={enemy.spawningDisabled}");
-
-        // The Unity prefab ships WITHOUT the AI script and WITHOUT the game's
-        // EnemyAICollisionDetect script (so the Unity project never needs the
-        // game's source). Add both here at load time, link the hitbox's
-        // EnemyAICollisionDetect.mainScript back to the AI, and stamp the
-        // EnemyType. See StillLifeBuilder.cs for why EnemyAICollisionDetect is
-        // added at runtime (Mac-vs-Windows build target).
-        var ai = enemy.enemyPrefab.GetComponent<StillLifeAI>()
-                 ?? enemy.enemyPrefab.AddComponent<StillLifeAI>();
-        ai.enemyType = enemy;
-        ai.creatureAnimator = enemy.enemyPrefab.GetComponentInChildren<Animator>();
-        ai.creatureSFX = enemy.enemyPrefab.GetComponent<AudioSource>();
-        // Find the hitbox child (the one with the trigger collider) and add
-        // the game's EnemyAICollisionDetect script to it, linking its
-        // mainScript back to the AI.
-        var enemyAICollisionT = System.Type.GetType("EnemyAICollisionDetect, Assembly-CSharp");
-        if (enemyAICollisionT == null)
+        // Hat: a flattened cube on top of the head, "tricorn" look.
+        var hat = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        hat.name = "Hat";
+        UnityEngine.Object.DestroyImmediate(hat.GetComponent<Collider>());
+        hat.transform.SetParent(root.transform, false);
+        hat.transform.localPosition = new Vector3(0, 1.85f, 0);
+        hat.transform.localScale = new Vector3(0.7f, 0.08f, 0.7f);
+        var hatRenderer = hat.GetComponent<Renderer>();
+        if (hatRenderer != null)
         {
-            // Fall back: scan loaded assemblies.
-            foreach (var asm in System.AppDomain.CurrentDomain.GetAssemblies())
+            Shader shader = Shader.Find("HDRP/Lit") ?? Shader.Find("Standard");
+            var mat = new Material(shader) { name = "PirateHatMat" };
+            if (shader.name == "HDRP/Lit")
             {
-                enemyAICollisionT = asm.GetType("EnemyAICollisionDetect");
-                if (enemyAICollisionT != null) break;
+                mat.SetColor("_BaseColor", new Color(0.10f, 0.08f, 0.08f));  // near-black
+                mat.SetFloat("_Smoothness", 0.1f);
             }
+            else mat.color = new Color(0.10f, 0.08f, 0.08f);
+            hatRenderer.sharedMaterial = mat;
         }
-        if (enemyAICollisionT != null)
+
+        // Belt: thin cube at the waist for visual interest.
+        var belt = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        belt.name = "Belt";
+        UnityEngine.Object.DestroyImmediate(belt.GetComponent<Collider>());
+        belt.transform.SetParent(root.transform, false);
+        belt.transform.localPosition = new Vector3(0, 0.95f, 0);
+        belt.transform.localScale = new Vector3(0.55f, 0.06f, 0.55f);
+        var beltRenderer = belt.GetComponent<Renderer>();
+        if (beltRenderer != null)
         {
-            foreach (var cd in enemy.enemyPrefab.GetComponentsInChildren(enemyAICollisionT, true))
+            Shader shader = Shader.Find("HDRP/Lit") ?? Shader.Find("Standard");
+            var mat = new Material(shader) { name = "PirateBeltMat" };
+            if (shader.name == "HDRP/Lit")
             {
-                var mainScriptField = enemyAICollisionT.GetField("mainScript",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (mainScriptField != null) mainScriptField.SetValue(cd, ai);
+                mat.SetColor("_BaseColor", new Color(0.4f, 0.3f, 0.2f));
+                mat.SetFloat("_Smoothness", 0.5f);
             }
-            // If the prefab doesn't have one yet, add it to the root (Unity
-            // is permissive about which GameObject the script lives on).
-            if (enemy.enemyPrefab.GetComponentInChildren(enemyAICollisionT, true) == null)
-            {
-                var cd = enemy.enemyPrefab.AddComponent(enemyAICollisionT);
-                var mainScriptField = enemyAICollisionT.GetField("mainScript",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (mainScriptField != null) mainScriptField.SetValue(cd, ai);
-                Log.LogInfo("Added EnemyAICollisionDetect to prefab root (no hitbox child was found).");
-            }
+            else mat.color = new Color(0.4f, 0.3f, 0.2f);
+            beltRenderer.sharedMaterial = mat;
+        }
+
+        // --- Functional components ---
+
+        // NavMeshAgent — how the AI moves around the level.
+        var agent = root.AddComponent<NavMeshAgent>();
+        agent.radius = 0.35f;
+        agent.height = 1.9f;
+        agent.speed = 3.2f;
+        agent.acceleration = 12f;
+        agent.angularSpeed = 240f;
+        agent.stoppingDistance = 0.6f;
+        agent.areaMask = ~0;
+
+        // AudioSource — for the eat SFX (and future ambient).
+        var sfx = root.AddComponent<AudioSource>();
+        sfx.playOnAwake = false;
+        sfx.spatialBlend = 1f;  // 3D positional
+
+        // NetworkObject — required for netcode (multiplayer).
+        var networkObjectT = System.Type.GetType("Unity.Netcode.NetworkObject, Unity.Netcode.Runtime");
+        if (networkObjectT != null)
+        {
+            root.AddComponent(networkObjectT);
         }
         else
         {
-            Log.LogWarning("EnemyAICollisionDetect type not found — enemy won't detect player collisions. " +
-                           "Check that LethalCompany.GameLibs.Steam NuGet version matches the game version.");
+            Log.LogWarning("[StillLife] Unity.Netcode.NetworkObject type not found — enemy may not work in multiplayer.");
         }
 
-        // --- audio (clips baked into the bundle by the Unity builder) ---
-        var ambientClip = bundle.LoadAsset<AudioClip>("PC_ambient");
-        var eatClip = bundle.LoadAsset<AudioClip>("PC_eat");
-        ai.eatClip = eatClip;
-
-        // Looping ambient "normal entity" voice on its own 3D source so the
-        // one-shot eat sound (on creatureSFX) never cuts it off.
-        var voice = enemy.enemyPrefab.AddComponent<AudioSource>();
-        voice.clip = ambientClip;
-        voice.loop = true;
-        voice.playOnAwake = true;
-        voice.spatialBlend = 1f;          // fully 3D/positional
-        voice.minDistance = 3f;
-        voice.maxDistance = 35f;
-        voice.rolloffMode = AudioRolloffMode.Linear;
-        voice.volume = 0.9f;
-        ai.voiceSource = voice;
-        if (ambientClip == null || eatClip == null)
-            Log.LogWarning("PC_ambient/PC_eat not found in bundle — rebuild the bundle with the audio added.");
-
-        // Register the enemy. Wrap in try/catch so if any single API call
-        // has been renamed in the current game version, we get a clear
-        // BepInEx log line instead of the whole mod failing to load silently.
-        try
+        // NetworkTransform — syncs position across the network.
+        var networkTransformT = System.Type.GetType("Unity.Netcode.Components.NetworkTransform, Unity.Netcode.Components");
+        if (networkTransformT != null)
         {
-            // Network prefab registration. The Netcode-for-GameObjects API
-            // changed between versions: RegisterNetworkPrefab (older) vs
-            // AddNetworkPrefab via NetworkManager (newer). LethalLib's
-            // RegisterEnemy also handles this internally, so the explicit
-            // call here is best-effort and not required.
-            try
-            {
-                NetworkPrefabs.RegisterNetworkPrefab(enemy.enemyPrefab);
-            }
-            catch (System.Exception npEx)
-            {
-                Log.LogWarning($"NetworkPrefabs.RegisterNetworkPrefab failed (non-fatal, LethalLib may handle it): {npEx.Message}");
-            }
-
-            Enemies.RegisterEnemy(
-                enemy,
-                SpawnWeight.Value,
-                Levels.LevelTypes.All,
-                Enemies.SpawnType.Default,
-                node,
-                keyword);
-
-            Log.LogInfo($"Registered enemy 'The Still Life' with spawn weight {SpawnWeight.Value} and max count {SpawnMaxCount.Value}.");
+            var nt = root.AddComponent(networkTransformT);
+            // Set Interpolate = true for smoother movement, disable scale sync.
+            TrySetProperty(nt, "Interpolate", true);
+            TrySetProperty(nt, "SyncScaleX", false);
+            TrySetProperty(nt, "SyncScaleY", false);
+            TrySetProperty(nt, "SyncScaleZ", false);
         }
-        catch (System.Exception regEx)
+        else
         {
-            Log.LogError($"Failed to register 'The Still Life' enemy: {regEx.GetType().Name}: {regEx.Message}");
-            Log.LogError($"Stack: {regEx.StackTrace}");
-            throw;  // Re-throw so Awake fails loudly instead of silently.
+            Log.LogWarning("[StillLife] Unity.Netcode.Components.NetworkTransform type not found — enemy may not work in multiplayer.");
         }
+
+        // Animator — required by EnemyAI base class, even if no clips.
+        // Create a minimal Animator with no controller; the base class won't crash
+        // because all our SetTrigger/SetBool calls in StillLifeAI are guarded.
+        root.AddComponent<Animator>();
+
+        // The AI script itself.
+        var ai = root.AddComponent<StillLifeAI>();
+        ai.enemyType = null;  // set below when EnemyType is built
+        ai.creatureAnimator = root.GetComponent<Animator>();
+        ai.creatureSFX = sfx;
+
+        // EnemyAICollisionDetect — game script, added at runtime so the Mac
+        // build target doesn't have to bake it in.
+        var enemyAICollisionT = ResolveType("EnemyAICollisionDetect");
+        if (enemyAICollisionT != null)
+        {
+            // Add to a child hitbox so the trigger collider doesn't fight with
+            // the NavMeshAgent's body collider.
+            var hitbox = new GameObject("Collision");
+            hitbox.transform.SetParent(root.transform, false);
+            hitbox.transform.localPosition = new Vector3(0, 1.0f, 0);
+            var cap = hitbox.AddComponent<CapsuleCollider>();
+            cap.isTrigger = true;
+            cap.radius = 0.4f;
+            cap.height = 2.0f;
+            cap.center = Vector3.zero;
+            var cd = hitbox.AddComponent(enemyAICollisionT);
+            // Link mainScript back to the AI.
+            TrySetField(cd, "mainScript", ai);
+        }
+        else
+        {
+            Log.LogError("[StillLife] EnemyAICollisionDetect type not found — enemy won't detect player collisions.");
+        }
+
+        return root;
     }
 
-    // Force-override the spawn-critical fields on an EnemyType at runtime.
-    // The Mac-built bundle can have its serialized field values silently
-    // dropped when the Windows game deserializes it (type-tree hash mismatch).
-    // Setting the fields at runtime via reflection writes them against the
-    // Windows type tree, so they persist into the spawn pool regardless.
-    //
-    // We use BOTH the publicised fields (when the publicised NuGet has the
-    // right field names) AND reflection fallbacks (when the publicised NuGet
-    // is out of date with the actual game version), so this is robust across
-    // game updates.
-    private static void ForceEnemyTypeOverrides(EnemyType enemy)
+    // Build the EnemyType ScriptableObject entirely in code.
+    private EnemyType BuildEnemyType(GameObject prefab)
     {
-        // PowerLevel: most critical. If this is 0, the enemy takes 0 power
-        // budget and is never picked. Force to 1.
-        SafeSetField(enemy, "PowerLevel", 1f, "float");
-        SafeSetField(enemy, "MaxCount", SpawnMaxCount.Value, "int");
-        // probabilityCurve: a flat curve means equal probability across all
-        // hours of the day. Default if missing would be a null curve, which
-        // can also silently disable the enemy.
-        SafeSetField(enemy, "probabilityCurve", new AnimationCurve(
-            new Keyframe(0f, 1f), new Keyframe(1f, 1f)), "AnimationCurve");
-        SafeSetField(enemy, "numberSpawnedFalloff", new AnimationCurve(
-            new Keyframe(0f, 0f), new Keyframe(1f, 1f)), "AnimationCurve");
-        SafeSetField(enemy, "useNumberSpawnedFalloff", false, "bool");
-        // Spawn flags: must be indoor-only, not daytime.
-        SafeSetField(enemy, "isOutsideEnemy", false, "bool");
-        SafeSetField(enemy, "isDaytimeEnemy", false, "bool");
-        SafeSetField(enemy, "spawningDisabled", false, "bool");
-        // Combat config: must be killable, destroyable, stunnable. The Mac
-        // bundle's defaults would let the game treat this as invincible.
-        SafeSetField(enemy, "canDie", true, "bool");
-        SafeSetField(enemy, "canBeDestroyed", true, "bool");
-        SafeSetField(enemy, "canBeStunned", true, "bool");
-        SafeSetField(enemy, "destroyOnDeath", false, "bool");
-        SafeSetField(enemy, "stunTimeMultiplier", 1f, "float");
-        SafeSetField(enemy, "stunGameDifficultyMultiplier", 1f, "float");
-        SafeSetField(enemy, "loudnessMultiplier", 1f, "float");
+        var enemyTypeT = ResolveType("EnemyType");
+        if (enemyTypeT == null)
+            throw new InvalidOperationException("EnemyType type not found in any loaded assembly — is LethalLib installed?");
+
+        var enemy = ScriptableObject.CreateInstance(enemyTypeT);
+        enemyTypeT.GetField("name", BindingFlags.Public | BindingFlags.Instance)?.SetValue(enemy, "StillLifeEnemy");
+        TrySetField(enemy, "enemyName", "Pirate Clark");
+        TrySetField(enemy, "enemyPrefab", prefab);
+        TrySetField(enemy, "isOutsideEnemy", false);
+        TrySetField(enemy, "isDaytimeEnemy", false);
+        TrySetField(enemy, "MaxCount", SpawnMaxCount.Value);
+        TrySetField(enemy, "PowerLevel", 1f);
+        // probabilityCurve: flat (equal probability across all hours of day).
+        // Without this, the default null curve can prevent the enemy from
+        // being picked at all.
+        TrySetField(enemy, "probabilityCurve", new AnimationCurve(
+            new Keyframe(0f, 1f), new Keyframe(1f, 1f)));
+        TrySetField(enemy, "numberSpawnedFalloff", new AnimationCurve(
+            new Keyframe(0f, 0f), new Keyframe(1f, 1f)));
+        TrySetField(enemy, "useNumberSpawnedFalloff", false);
+        TrySetField(enemy, "spawningDisabled", false);
+        TrySetField(enemy, "canDie", true);
+        TrySetField(enemy, "canBeDestroyed", true);
+        TrySetField(enemy, "canBeStunned", true);
+        TrySetField(enemy, "destroyOnDeath", false);
+        TrySetField(enemy, "stunTimeMultiplier", 1f);
+        TrySetField(enemy, "stunGameDifficultyMultiplier", 1f);
+        TrySetField(enemy, "loudnessMultiplier", 1f);
+
+        // Now link the prefab's AI back to this EnemyType.
+        var ai = prefab.GetComponent<StillLifeAI>();
+        if (ai != null) TrySetField(ai, "enemyType", enemy);
+
+        return (EnemyType)enemy;
     }
 
-    // Reflection-safe field setter. Tries the typed property first (works
-    // when the publicised NuGet matches the actual game). Falls back to
-    // GetField with BindingFlags.NonPublic (works for private fields). Logs
-    // and skips anything it can't find.
-    private static void SafeSetField(object obj, string name, object value, string typeName)
+    // Resolve a type by simple name, scanning all loaded assemblies.
+    // Prefers Assembly-CSharp (the game).
+    internal static Type? ResolveType(string simpleName)
     {
+        var matches = AppDomain.CurrentDomain.GetAssemblies()
+            .SelectMany(a => { try { return a.GetTypes(); } catch { return Array.Empty<Type>(); } })
+            .Where(t => t.Name == simpleName)
+            .ToList();
+        if (matches.Count == 0) return null;
+        return matches.FirstOrDefault(t => t.Assembly.GetName().Name == "Assembly-CSharp") ?? matches[0];
+    }
+
+    internal static void TrySetField(object obj, string name, object? value)
+    {
+        if (obj == null || value == null) return;
         var t = obj.GetType();
-        // Try the property first (publicised fields become properties).
-        var prop = t.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
-        if (prop != null && prop.CanWrite)
-        {
-            try { prop.SetValue(obj, value); return; }
-            catch (System.Exception ex) { Log.LogWarning($"[StillLife] Set property {name} failed: {ex.Message}"); }
-        }
-        // Fall back to the underlying field.
-        var field = t.GetField(name,
-            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        if (field == null)
-        {
-            // Not an error — just means this field doesn't exist on this
-            // game version. Skip silently.
-            return;
-        }
-        try { field.SetValue(obj, value); }
-        catch (System.Exception ex)
-        {
-            Log.LogWarning($"[StillLife] Set field {name} ({typeName}) failed: {ex.Message}");
-        }
+        var f = t.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        if (f != null) { try { f.SetValue(obj, value); } catch (Exception e) { Log.LogWarning($"[StillLife] Set {name} failed: {e.Message}"); } }
+    }
+
+    internal static void TrySetProperty(object obj, string name, object? value)
+    {
+        if (obj == null || value == null) return;
+        var t = obj.GetType();
+        var p = t.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+        if (p != null && p.CanWrite) { try { p.SetValue(obj, value, null); } catch (Exception e) { Log.LogWarning($"[StillLife] Set prop {name} failed: {e.Message}"); } }
     }
 }
