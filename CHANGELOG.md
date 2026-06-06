@@ -2,7 +2,20 @@
 
 All notable changes to LethalPirateClark are documented in this file. Dates are YYYY-MM-DD.
 
-## [1.0.3] - 2026-06-06
+## [1.1.0] - 2026-06-06
+
+### The real model
+- **The actual Pirate Clark mesh is now in-game.** The 18,375-vertex, 19,999-face model is exported from `PirateClark.fbx` to a triangulated `.obj` (`model-source/pirate_clark_embedded.obj`, 2.4 MB), embedded as a .NET manifest resource in the BepInEx DLL (`LethalPirateClark.pirate_clark.obj`), and parsed at runtime by `ObjMeshLoader.cs` into a Unity `Mesh`. The model is rendered with HDRP/Lit, tinted to a single mustard-yellow "pirate coat" color (texture map loading deferred to v1.2.0).
+- v1.0.4 was actually the *same* source code (the OBJ embedding was already wired in), but the DLL shipped to the user was stale. v1.1.0 ships a fresh build with the .obj resource verified embedded via a Unity editor batch test (`unity_meshtest3.log`).
+- 2.4 MB DLL → 1.0 MB installed zip (zlib-compresses well; the .obj is just floats).
+
+### Why v1.0.4 was a procedural capsule when it should have been the real model
+- The `Plugin.cs` v1.1.0 code with `ObjMeshLoader.LoadEmbedded(...)` was committed to the source repo at the end of the previous Claude Code session, but the v1.0.4 zip I shipped used a stale 28 KB DLL (the old procedural build) by mistake. The repro in the v1.0.4 zip was a fallback capsule because `LoadEmbedded` returned null (the .obj wasn't actually embedded in that stale DLL). v1.1.0 has the fresh build with the .obj actually embedded.
+
+### Verified
+- Unity editor batch test (`StillLifeMeshTest.Test`) confirms the .obj is embedded in the DLL with stats: `v=18,375, vt=17,707, vn=18,243, f=19,999`. See `build_logs/unity_meshtest3.log` for the full diagnostic.
+
+## [1.0.4] - 2026-06-06
 
 ### The big one
 - **Pirate Clark was *never* spawning — not because of any v1.0.1/v1.0.2 issue, but because the Mac Unity build of the `stilllife` asset bundle was being written corrupt.** `AssetBundle.LoadFromFile` AND `LoadFromMemory` both return NULL, even on the same Mac editor that built the bundle. This was a silent failure: the mod DLL loaded, `LoadFromFile` returned NULL, `LoadAsset<EnemyType>` was never called, the enemy was never registered, and the debug menu never listed it. Every version from v1.0.0 onward has had this bug.

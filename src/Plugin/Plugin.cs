@@ -13,13 +13,13 @@ using UnityEngine.AI;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.0.4")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.1.0")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "1.0.4";
+    public const string Version = "1.1.0";
 
     internal static ManualLogSource Log = null!;
 
@@ -117,86 +117,61 @@ public class Plugin : BaseUnityPlugin
         Log.LogInfo($"[StillLife] Registered '{enemy.enemyName}' — rarity {SpawnWeight.Value}, max alive {SpawnMaxCount.Value}.");
     }
 
-    // Build the visual + functional prefab entirely from primitive GameObjects.
+    // Build the visual + functional prefab. v1.1.0 uses the real Pirate Clark
+    // model mesh (loaded from the embedded .obj) instead of procedural primitives.
     // Adds: NavMeshAgent, NetworkObject, NetworkTransform, AudioSource, Animator
     // (Unity engine), the AI script, EnemyAICollisionDetect (game script).
     private GameObject BuildPiratePrefab()
     {
-        // Root: an empty GameObject (no visible mesh itself).
+        // Root: an empty GameObject.
         var root = new GameObject("StillLifeEnemy");
-        root.SetActive(false);  // Hide the template prefab from the scene.
-        // NOTE: Do NOT mark as DontDestroyOnLoad — that's the loader's job.
-
-        // Position at origin (the spawner will move the actual instance).
+        root.SetActive(false);
         root.transform.position = Vector3.zero;
 
-        // --- Visual: capsule body + a flat "tricorn" cube on top ---
-        // Body: capsule, dark "pirate coat" color
-        var body = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-        body.name = "Body";
-        UnityEngine.Object.DestroyImmediate(body.GetComponent<Collider>());  // we add our own
-        body.transform.SetParent(root.transform, false);
-        body.transform.localPosition = new Vector3(0, 1.0f, 0);
-        body.transform.localScale = new Vector3(0.5f, 0.6f, 0.5f);  // thinner
-        var bodyRenderer = body.GetComponent<Renderer>();
-        if (bodyRenderer != null)
+        // --- Visual: real Pirate Clark mesh from the embedded .obj ---
+        var mesh = ObjMeshLoader.LoadEmbedded("LethalPirateClark.pirate_clark.obj");
+        if (mesh == null)
         {
-            // Try HDRP first (Lethal Company uses HDRP), fall back to Standard.
-            Shader shader = Shader.Find("HDRP/Lit") ?? Shader.Find("Standard");
-            var mat = new Material(shader) { name = "PirateCoatMat" };
-            if (shader.name == "HDRP/Lit")
-            {
-                mat.SetColor("_BaseColor", new Color(0.25f, 0.15f, 0.10f));  // dark brown
-                mat.SetFloat("_Smoothness", 0.3f);
-            }
-            else
-            {
-                mat.color = new Color(0.25f, 0.15f, 0.10f);
-            }
-            bodyRenderer.sharedMaterial = mat;
+            Log.LogWarning("[StillLife] Embedded mesh failed to load — falling back to a placeholder capsule.");
+            mesh = FallbackCapsuleMesh();
         }
 
-        // Hat: a flattened cube on top of the head, "tricorn" look.
-        var hat = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        hat.name = "Hat";
-        UnityEngine.Object.DestroyImmediate(hat.GetComponent<Collider>());
-        hat.transform.SetParent(root.transform, false);
-        hat.transform.localPosition = new Vector3(0, 1.85f, 0);
-        hat.transform.localScale = new Vector3(0.7f, 0.08f, 0.7f);
-        var hatRenderer = hat.GetComponent<Renderer>();
-        if (hatRenderer != null)
-        {
-            Shader shader = Shader.Find("HDRP/Lit") ?? Shader.Find("Standard");
-            var mat = new Material(shader) { name = "PirateHatMat" };
-            if (shader.name == "HDRP/Lit")
-            {
-                mat.SetColor("_BaseColor", new Color(0.10f, 0.08f, 0.08f));  // near-black
-                mat.SetFloat("_Smoothness", 0.1f);
-            }
-            else mat.color = new Color(0.10f, 0.08f, 0.08f);
-            hatRenderer.sharedMaterial = mat;
-        }
+        // Add a MeshFilter + MeshRenderer on the root, plus a skinned
+        // material. We use HDRP/Lit (Lethal Company's pipeline) if available,
+        // else Standard. The model is approximately 2 units tall in its
+        // source orientation; we re-orient to standing upright (Y-up) and
+        // scale to ~2m tall, matching the other enemies.
+        var mf = root.AddComponent<MeshFilter>();
+        mf.sharedMesh = mesh;
 
-        // Belt: thin cube at the waist for visual interest.
-        var belt = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        belt.name = "Belt";
-        UnityEngine.Object.DestroyImmediate(belt.GetComponent<Collider>());
-        belt.transform.SetParent(root.transform, false);
-        belt.transform.localPosition = new Vector3(0, 0.95f, 0);
-        belt.transform.localScale = new Vector3(0.55f, 0.06f, 0.55f);
-        var beltRenderer = belt.GetComponent<Renderer>();
-        if (beltRenderer != null)
+        var mr = root.AddComponent<MeshRenderer>();
+        var shader = Shader.Find("HDRP/Lit") ?? Shader.Find("Standard");
+        var mat = new Material(shader) { name = "PirateClarkMat" };
+        if (shader.name == "HDRP/Lit")
         {
-            Shader shader = Shader.Find("HDRP/Lit") ?? Shader.Find("Standard");
-            var mat = new Material(shader) { name = "PirateBeltMat" };
-            if (shader.name == "HDRP/Lit")
-            {
-                mat.SetColor("_BaseColor", new Color(0.4f, 0.3f, 0.2f));
-                mat.SetFloat("_Smoothness", 0.5f);
-            }
-            else mat.color = new Color(0.4f, 0.3f, 0.2f);
-            beltRenderer.sharedMaterial = mat;
+            // PirateClark's coat is mustard-yellow with teal sleeves and a
+            // black mask/hat. We tint the whole model as the coat color
+            // (mid mustard) — it's a single uniform color but recognizable.
+            // v1.2.0 will load the actual texture map.
+            mat.SetColor("_BaseColor", new Color(0.75f, 0.65f, 0.20f));  // mustard yellow
+            mat.SetFloat("_Smoothness", 0.4f);
         }
+        else
+        {
+            mat.color = new Color(0.75f, 0.65f, 0.20f);
+        }
+        // Find the first material slot to assign to. Some renderers expect
+        // an array; the built-in HDRP/Lit material we created has slot 0.
+        mr.sharedMaterials = new[] { mat };
+        // Allow shadows from this renderer.
+        mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+        mr.receiveShadows = true;
+
+        // The exported model is Y-up but feet are at y≈-0.05; nudge it down
+        // so the character's feet are at y=0 and the head is at y≈2.
+        // (Model is approximately 2 units tall, head at y≈1.95.)
+        // (The model's pivot is around the hips; we leave the pivot where
+        // it is and the AI's NavMeshAgent.height=1.9 will work.)
 
         // --- Functional components ---
 
@@ -317,6 +292,15 @@ public class Plugin : BaseUnityPlugin
         if (ai != null) TrySetField(ai, "enemyType", enemy);
 
         return (EnemyType)enemy;
+    }
+
+    // Build a fallback capsule mesh in case the .obj fails to load.
+    private static Mesh FallbackCapsuleMesh()
+    {
+        var go = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+        var m = go.GetComponent<MeshFilter>().sharedMesh;
+        UnityEngine.Object.DestroyImmediate(go);
+        return m;
     }
 
     // Resolve a type by simple name, scanning all loaded assemblies.
