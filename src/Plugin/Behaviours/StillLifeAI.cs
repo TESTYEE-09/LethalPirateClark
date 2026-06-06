@@ -111,14 +111,18 @@ public class StillLifeAI : EnemyAI
             if (isEnemyDead) return;
 
             bool seen = AnyPlayerSeesMe();
-            if (seen)
+            bool freeze = Plugin.FreezeWhenWatched.Value && seen;
+            if (freeze)
             {
                 _unseenTime = 0f;
                 Freeze(true);
             }
             else
             {
-                _unseenTime += Time.deltaTime;
+                // Movie behaviour (default): keep advancing even while watched.
+                // Only ramp the unseen-speed bonus while he's actually unseen;
+                // hold base speed when observed.
+                if (!seen) _unseenTime += Time.deltaTime;
                 Freeze(false);
                 agent.speed = Mathf.Min(maxSpeed, baseSpeed + _unseenTime * accelPerSecondUnseen);
             }

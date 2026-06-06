@@ -13,13 +13,13 @@ using UnityEngine.AI;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.2.2")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.2.3")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "1.2.2";
+    public const string Version = "1.2.3";
 
     internal static ManualLogSource Log = null!;
 
@@ -27,6 +27,7 @@ public class Plugin : BaseUnityPlugin
     internal static ConfigEntry<int> SpawnWeight = null!;
     internal static ConfigEntry<int> SpawnMaxCount = null!;
     internal static ConfigEntry<float> MoveSpeed = null!;
+    internal static ConfigEntry<bool> FreezeWhenWatched = null!;
     internal static ConfigEntry<bool> ConversionEnabled = null!;
     internal static ConfigEntry<int> MaxStillLives = null!;
 
@@ -49,6 +50,9 @@ public class Plugin : BaseUnityPlugin
             "Bumped from 4 to 8 for testing — set to 1 for a 'one at a time' experience.");
         MoveSpeed = Config.Bind("Behaviour", "MoveSpeed", 3.2f,
             "Base movement speed (m/s) when unobserved. Ramps up the longer it goes unseen.");
+        FreezeWhenWatched = Config.Bind("Behaviour", "FreezeWhenWatched", false,
+            "If true, Pirate Clark freezes while any player looks at him (classic 'Still Life'). " +
+            "If false (default), he keeps advancing even while watched — like the Backrooms movie.");
         ConversionEnabled = Config.Bind("Conversion", "Enabled", true,
             "Phase 2: when the Still Life kills a player, the corpse rises as a new Still Life.");
         MaxStillLives = Config.Bind("Conversion", "MaxAlive", 4,
