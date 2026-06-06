@@ -2,6 +2,20 @@
 
 All notable changes to LethalPirateClark are documented in this file. Dates are YYYY-MM-DD.
 
+## [1.3.2] - 2026-06-06
+
+### Diagnostic build — Pirate Clark still floats, doesn't move, no sound, no scale after v1.3.1
+- v1.3.1 shipped the NRE fix (template returned inactive, then `SetActive(true)` after `enemyType` was assigned) and the `GlobalObjectIdHash` reflection set. The user's test run still showed all four symptoms, so the v1.3.1 diagnosis was wrong or only addressed two of however many things are broken.
+- v1.3.2 is a **diagnostic-only** build. Same code, same fix, same DLL — but with three new log blocks that print a definitive fingerprint on startup and on every spawn attempt, so the next test run's log identifies the exact step that is failing (network-spawn, NavMesh, audio routing, scale, or position).
+- **No new features and no behavior changes.** The same NRE fix and hash set remain in place; v1.3.2 just instruments them. If v1.3.2 accidentally fixes the problem, great — but the contract is "give us the data."
+- New logs to look for in `BepInEx/LogOutput.log`:
+  - At startup: `[StillLife] === BUILD START ===` followed by a multi-line fingerprint of the template (hash read-back, position, scale, active state, enabled state of every component, AI's `enemyType`).
+  - At startup: `[StillLife] LethalLib NetworkPrefabs list count: N` (catches the case where LethalLib never queues the prefab).
+  - On every Pirate Clark clone: `[StillLife] CLONE FINGERPRINT` one-liner with `IsOwner/IsServer/IsHost/IsClient/IsSpawned`, `NetworkObjectId`, `OwnerClientId`, `transform.position`, `transform.localScale`, `activeInHierarchy`, `agent.isOnNavMesh/enabled`, `voiceSource.isPlaying/clip/spatialBlend/minDistance/maxDistance`, `enemyType.name`.
+  - If `Start()` returns early: `[StillLife] CLONE FINGERPRINT (Start() early-returned: !IsSpawned)` — a missing CLONE FINGERPRINT line is itself diagnostic.
+  - Per-clone watchdog log when state is non-default (inactive, scale != 1.25, `IsSpawned == false`, parented to the template).
+  - Per-spawn log in the `SpawnEnemyGameObject` postfix (hash, `IsSpawned`, scene name, position before re-activation).
+
 ## [1.3.1] - 2026-06-06
 
 ### Movement fix completed

@@ -1,3 +1,4 @@
+using System.Reflection;
 using HarmonyLib;
 using StillLife.Behaviours;
 using Unity.Netcode;
@@ -18,6 +19,9 @@ namespace StillLife.Patches;
 internal static class SpawnActivatePatch
 {
     private static bool _loggedFirstCall;
+    // v1.3.2 diagnostic: per-spawn fingerprint. Throttle to the first N spawns
+    // so a busy session doesn't flood the log.
+    private static int _spawnsLogged;
 
     [HarmonyPostfix]
     private static void Postfix(NetworkObjectReference __result)
@@ -43,5 +47,38 @@ internal static class SpawnActivatePatch
             go.SetActive(true);
             Plugin.Log.LogInfo($"[StillLife] Activated spawned Pirate Clark instance at {go.transform.position:F1}.");
         }
+
+        // v1.3.2 diagnostic: per-spawn fingerprint. Log the first 8 spawns
+        // (== Spawn.MaxCount). After that, stop to keep the log readable.
+        if (_spawnsLogged < 8)
+        {
+            _spawnsLogged++;
+            // Read the resolved NetworkObject's hash (via reflection on the
+            // GlobalObjectIdHash field) and IsSpawned so we can see if NGO
+            // actually spawned the clone, vs the call returning a stale ref.
+            uint hash = 0;
+            bool isSpawned = false;
+            try
+            {
+                var t = typeof(NetworkObject);
+                var f = t.GetField("GlobalObjectIdHash", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                if (f != null) hash = (uint)f.GetValue(netObj);
+                var p = t.GetProperty("IsSpawned");
+                if (p != null) isSpawned = (bool)p.GetValue(netObj);
+            }
+            catch { /* ignore — already logging from watchdog */ }
+
+            Plugin.Log.LogInfo($"[StillLife] Spawn-pipeline fingerprint #{_spawnsLogged}: " +
+                $"name='{go.name}', " +
+                $"scene='{go.scene.name}', " +
+                $"pos={go.transform.position:F2}, " +
+                $"scale={go.transform.localScale:F2}, " +
+                $"active={go.activeSelf}/{go.activeInHierarchy}, " +
+                $"NetworkObjectId={netObj.NetworkObjectId}, " +
+                $"GlobalObjectIdHash=0x{hash:X8}, " +
+                $"NetworkObject.IsSpawned={isSpawned}, " +
+                $"enemyType={(ai.enemyType != null ? ai.enemyType.enemyName : "NULL")}");
+        }
     }
 }
+

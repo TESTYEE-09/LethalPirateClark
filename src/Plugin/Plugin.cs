@@ -13,13 +13,13 @@ using UnityEngine.AI;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.3.1")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.3.2")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "1.3.1";
+    public const string Version = "1.3.2";
 
     internal static ManualLogSource Log = null!;
 
@@ -113,10 +113,95 @@ public class Plugin : BaseUnityPlugin
         prefab.SetActive(true);
         Log.LogInfo("[StillLife] Template activated (enemyType is set, Awake() will not NRE).");
 
+        // --- 2c. Startup fingerprint (v1.3.2 diagnostic) ---
+        // Read back the template's state so a v1.3.2 log can identify which
+        // step of the chain (hash set, LethalLib queue, NGO registration,
+        // Netcode Spawn) actually failed. If Pirate Clark is broken in v1.3.1,
+        // one of these lines will be obviously wrong.
+        Log.LogInfo("[StillLife] === BUILD START ===");
+        Log.LogInfo($"[StillLife] template.name='{prefab.name}', activeSelf={prefab.activeSelf}, " +
+                    $"activeInHierarchy={prefab.activeInHierarchy}, " +
+                    $"pos={prefab.transform.position:F2}, scale={prefab.transform.localScale:F2}");
+
+        // networkObjectT / networkTransformT are local to BuildPiratePrefab;
+        // re-resolve them here for the fingerprint. Cheap reflection.
+        var fpNetworkObjectT = System.Type.GetType("Unity.Netcode.NetworkObject, Unity.Netcode.Runtime");
+        var fpNetworkTransformT = System.Type.GetType("Unity.Netcode.Components.NetworkTransform, Unity.Netcode.Components");
+        var templateNetObj = fpNetworkObjectT != null ? prefab.GetComponent(fpNetworkObjectT) : null;
+        if (templateNetObj != null)
+        {
+            // Re-read GlobalObjectIdHash via reflection so we can confirm the
+            // set in BuildPiratePrefab() actually stuck. If the value is 0 here,
+            // the reflection set is the bug (wrong field, wrong binding flags,
+            // or NGO has its own internal cache that overwrote it).
+            uint hashRead = 0;
+            try
+            {
+                var f = fpNetworkObjectT.GetField("GlobalObjectIdHash",
+                    BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+                if (f != null) hashRead = (uint)f.GetValue(templateNetObj);
+            }
+            catch (Exception ex) { Log.LogWarning($"[StillLife] hash readback failed: {ex.Message}"); }
+            Log.LogInfo($"[StillLife] NetworkObject on template: type={templateNetObj.GetType().FullName}, " +
+                        $"GlobalObjectIdHash=0x{hashRead:X8} (expected 0x5111C1A4), enabled={((Behaviour)templateNetObj).enabled}");
+
+            // Read IsSpawned on the template (should be false — it's never spawned itself,
+            // only cloned). And any prefab hash table that NGO/LethalLib may have populated.
+            try
+            {
+                var isSpawnedProp = fpNetworkObjectT.GetProperty("IsSpawned");
+                if (isSpawnedProp != null)
+                    Log.LogInfo($"[StillLife] template NetworkObject.IsSpawned={isSpawnedProp.GetValue(templateNetObj)} (false expected).");
+            }
+            catch (Exception ex) { Log.LogWarning($"[StillLife] IsSpawned read failed: {ex.Message}"); }
+        }
+        else
+        {
+            Log.LogWarning("[StillLife] NetworkObject component not present on template.");
+        }
+
+        var templateNt = fpNetworkTransformT != null ? prefab.GetComponent(fpNetworkTransformT) : null;
+        Log.LogInfo($"[StillLife] NetworkTransform on template: present={templateNt != null}, " +
+                    $"enabled={(templateNt is Behaviour b && b.enabled)}");
+
+        var templateAi = prefab.GetComponent<StillLifeAI>();
+        if (templateAi != null)
+        {
+            Log.LogInfo($"[StillLife] StillLifeAI on template: enabled={templateAi.enabled}, " +
+                        $"enemyType={(templateAi.enemyType != null ? templateAi.enemyType.enemyName : "NULL")}, " +
+                        $"voiceSource={(templateAi.voiceSource != null ? "set" : "NULL")}, " +
+                        $"eatClip={(templateAi.eatClip != null ? "set" : "NULL")}");
+        }
+
+        // Check that the AI is NOT considered "spawned" on the template, which
+        // would make NGO refuse to spawn clones of it.
+        if (templateAi != null && templateAi.IsSpawned)
+            Log.LogWarning("[StillLife] Template StillLifeAI.IsSpawned is TRUE — NGO may refuse to clone this template.");
+
         // --- 3. Register the network prefab (best-effort) ---
         try
         {
             NetworkPrefabs.RegisterNetworkPrefab(prefab);
+            // After LethalLib queues it, peek at the LethalLib internal list so
+            // we know the queue actually accepted our prefab. If the count is 0
+            // (or our prefab is not in the list), LethalLib silently dropped it
+            // and the next NGO Spawn() will fail.
+            try
+            {
+                var llAsm = System.AppDomain.CurrentDomain.GetAssemblies()
+                    .FirstOrDefault(a => a.GetName().Name == "LethalLib");
+                if (llAsm != null)
+                {
+                    var listField = llAsm.GetType("LethalLib.Modules.NetworkPrefabs")
+                        ?.GetField("_networkPrefabs", BindingFlags.Static | BindingFlags.NonPublic);
+                    if (listField != null)
+                    {
+                        var list = listField.GetValue(null) as System.Collections.IList;
+                        Log.LogInfo($"[StillLife] LethalLib NetworkPrefabs list count: {list?.Count ?? -1}.");
+                    }
+                }
+            }
+            catch (Exception ex) { Log.LogWarning($"[StillLife] LethalLib queue peek failed: {ex.Message}"); }
         }
         catch (System.Exception npEx)
         {

@@ -1,6 +1,6 @@
 {
   "name": "LethalPirateClark",
-  "version_number": "1.3.1",
+  "version_number": "1.3.2",
   "website_url": "https://github.com/TESTYEE-09/LethalPirateClark",
   "description": "Adds Pirate Clark, a Backrooms 'Still Life': an uncanny copied corpse in a rotted pirate's coat who advances on you even while watched (movie-style), flickers lights, breaks down doors, and turns the players he kills into new Still Lifes. Model CC-BY Slightlyoversizedsweater.",
   "dependencies": [

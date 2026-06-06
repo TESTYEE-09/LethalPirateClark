@@ -18,6 +18,10 @@ internal class StillLifeWatchdog : MonoBehaviour
 {
     private float _timer;
     private int _lastCloneCount = -1;
+    // v1.3.2: track the last per-clone noteworthy-state key so we don't spam
+    // the log every 0.5s. (h << 16) | (instanceID & 0xFFFF) — re-logs only
+    // when the set of problems on this clone changes.
+    private int _lastPerCloneKey;
 
     private void Update()
     {
@@ -47,6 +51,48 @@ internal class StillLifeWatchdog : MonoBehaviour
                 activated++;
                 Plugin.Log.LogInfo($"[StillLife] Watchdog ACTIVATED a Pirate Clark clone at {go.transform.position:F1} (was inactive).");
             }
+
+            // v1.3.2 per-clone diagnostic: log a one-liner only when the
+            // clone's state is non-default (inactive, scale != 1.25,
+            // parented to the template, NetworkObject.IsSpawned == false).
+            // Includes an int hash of the noteworthy state so we only re-log
+            // when the state actually changes.
+            bool isInActive = !go.activeSelf; // post-activation, this is false
+            var parent = go.transform.parent;
+            bool parentedToTemplate = parent != null && parent.name == "StillLifeEnemy";
+            var scale = go.transform.localScale;
+            bool scaleOff = Mathf.Abs(scale.x - 1.25f) > 0.01f
+                         || Mathf.Abs(scale.y - 1.25f) > 0.01f
+                         || Mathf.Abs(scale.z - 1.25f) > 0.01f;
+            bool netSpawned = false;
+            try
+            {
+                var no = ai.NetworkObject; // EnemyAI exposes NetworkObject
+                if (no != null)
+                {
+                    var p = no.GetType().GetProperty("IsSpawned");
+                    if (p != null) netSpawned = (bool)p.GetValue(no);
+                }
+            }
+            catch { /* NetworkObject may be null; treat as not-spawned */ }
+
+            if (isInActive || parentedToTemplate || scaleOff || !netSpawned)
+            {
+                // Compose a small int fingerprint of the noteworthy bits so we
+                // re-log only when the set of problems changes per-clone.
+                int h = (isInActive ? 1 : 0)
+                      | (parentedToTemplate ? 2 : 0)
+                      | (scaleOff ? 4 : 0)
+                      | (netSpawned ? 0 : 8);
+                int perCloneKey = (h << 16) | (go.GetInstanceID() & 0xFFFF);
+                if (perCloneKey != _lastPerCloneKey)
+                {
+                    _lastPerCloneKey = perCloneKey;
+                    Plugin.Log.LogInfo($"[StillLife] Watchdog per-clone state on '{go.name}' (id={go.GetInstanceID()}): " +
+                        $"inactive={isInActive}, parentedToTemplate={parentedToTemplate}, " +
+                        $"scale={scale:F2} (expected 1.25), NetworkObject.IsSpawned={netSpawned}.");
+                }
+            }
         }
 
         if (clones != _lastCloneCount)
@@ -57,3 +103,4 @@ internal class StillLifeWatchdog : MonoBehaviour
         }
     }
 }
+

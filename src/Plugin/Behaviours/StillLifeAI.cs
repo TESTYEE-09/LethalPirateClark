@@ -45,6 +45,11 @@ public class StillLifeAI : EnemyAI
     private float _nextFlickerToggle;
     private Coroutine? _doorRoutine;
 
+    // v1.3.2 diagnostic: only log the full spawn fingerprint once per clone
+    // (Start() can fire on inactive templates too, so without this guard we
+    // would log the fingerprint for the template + every clone).
+    private bool _startLogged;
+
     public override void Start()
     {
         try
@@ -52,7 +57,15 @@ public class StillLifeAI : EnemyAI
             if (!IsSpawned)
             {
                 // The inert prefab template (kept active so Netcode can clone
-                // it, but never network-spawned itself). Run no EnemyAI setup.
+                // it, but never network-spawned itself). Log a one-line fingerprint
+                // for the template so a v1.3.2 log can tell template from clone.
+                if (!_startLogged)
+                {
+                    _startLogged = true;
+                    Plugin.Log.LogInfo($"[StillLife] CLONE FINGERPRINT (template, !IsSpawned): " +
+                        $"name='{name}', pos={transform.position:F2}, scale={transform.localScale:F2}, " +
+                        $"active={gameObject.activeSelf}/{gameObject.activeInHierarchy}");
+                }
                 return;
             }
             base.Start();
@@ -61,6 +74,29 @@ public class StillLifeAI : EnemyAI
             Plugin.LiveStillLives++;
             // v1.0.4: log exactly where we spawned so the user can find us.
             Plugin.Log.LogInfo($"[StillLife] Pirate Clark SPAWNED at {transform.position:F1} (round time {StartOfRound.Instance?.currentLevel?.name ?? "unknown"}). LiveStillLives={Plugin.LiveStillLives}");
+
+            // v1.3.2 diagnostic: one comprehensive line per clone with every
+            // field that could explain "floats, doesn't move, no sound, small".
+            if (!_startLogged)
+            {
+                _startLogged = true;
+                string voiceStatus = voiceSource != null
+                    ? $"play={voiceSource.isPlaying} clip={(voiceSource.clip != null ? "set" : "NULL")} " +
+                      $"blend={voiceSource.spatialBlend:F1} min={voiceSource.minDistance:F1} max={voiceSource.maxDistance:F1}"
+                    : "NULL";
+                string agentStatus = agent != null
+                    ? $"onNavMesh={agent.isOnNavMesh} enabled={agent.enabled} stopped={agent.isStopped}"
+                    : "NULL";
+                Plugin.Log.LogInfo($"[StillLife] CLONE FINGERPRINT: " +
+                    $"name='{name}', " +
+                    $"pos={transform.position:F2}, scale={transform.localScale:F2}, " +
+                    $"active={gameObject.activeSelf}/{gameObject.activeInHierarchy}, " +
+                    $"IsOwner={IsOwner}, IsServer={IsServer}, IsHost={IsHost}, IsClient={IsClient}, IsSpawned={IsSpawned}, " +
+                    $"NetworkObjectId={(NetworkObject?.NetworkObjectId ?? 0)}, " +
+                    $"OwnerClientId={(NetworkObject?.OwnerClientId ?? 0)}, " +
+                    $"enemyType={(enemyType != null ? enemyType.enemyName : "NULL")}, " +
+                    $"agent=({agentStatus}), voice=({voiceStatus})");
+            }
 
             // Make sure the NavMeshAgent is actually on a NavMesh, or he can't
             // move at all (and the game logs nothing). Snap to the nearest mesh
@@ -80,7 +116,6 @@ public class StillLifeAI : EnemyAI
                         Plugin.Log.LogWarning("[StillLife] No NavMesh within 20m of spawn — Pirate Clark can't path here.");
                     }
                 }
-                Plugin.Log.LogInfo($"[StillLife] agent.isOnNavMesh={agent.isOnNavMesh}, enabled={agent.enabled}, IsOwner={IsOwner}, IsServer={IsServer}.");
             }
 
             // Begin the looping ambient entity sound.
