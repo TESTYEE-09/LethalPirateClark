@@ -10,18 +10,19 @@ using UnityEngine;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.0.1")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.0.2")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "1.0.1";
+    public const string Version = "1.0.2";
 
     internal static ManualLogSource Log = null!;
 
     // Tunables exposed in the BepInEx config file.
     internal static ConfigEntry<int> SpawnWeight = null!;
+    internal static ConfigEntry<int> SpawnMaxCount = null!;
     internal static ConfigEntry<float> MoveSpeed = null!;
     internal static ConfigEntry<bool> ConversionEnabled = null!;
     internal static ConfigEntry<int> MaxStillLives = null!;
@@ -36,9 +37,13 @@ public class Plugin : BaseUnityPlugin
     {
         Log = Logger;
 
-        SpawnWeight = Config.Bind("Spawn", "Rarity", 200,
+        SpawnWeight = Config.Bind("Spawn", "Rarity", 1000,
             "Relative spawn weight on indoor levels. Higher = more common. " +
-            "Bumped to 200 for v81 testing — set to 30-50 for a 'feels rare' experience.");
+            "Bumped to 1000 for v81 testing — set to 30-50 for a 'feels rare' experience. " +
+            "Maximum useful value is around 1000 (game caps it internally).");
+        SpawnMaxCount = Config.Bind("Spawn", "MaxCount", 8,
+            "Hard cap on how many Pirate Clarks can be alive at once on a level. " +
+            "Bumped from 4 to 8 for testing — set to 1 for a 'one at a time' experience.");
         MoveSpeed = Config.Bind("Behaviour", "MoveSpeed", 3.2f,
             "Base movement speed (m/s) when unobserved. Ramps up the longer it goes unseen.");
         ConversionEnabled = Config.Bind("Conversion", "Enabled", true,
@@ -76,6 +81,28 @@ public class Plugin : BaseUnityPlugin
             Log.LogError("Bundle loaded but 'StillLifeEnemy' EnemyType was not found.");
             return;
         }
+
+        // --- RUNTIME OVERRIDE of EnemyType fields ---
+        // The EnemyType is serialized into the bundle by the Mac Unity build
+        // (because we don't have Windows Build Support). When the Windows
+        // game deserializes it, the type tree hash mismatches and any field
+        // whose type signature disagrees between Mac and Windows is silently
+        // dropped to its default. The critical one is PowerLevel: if it
+        // drops to 0, the enemy takes 0 power budget and is never picked
+        // by the spawner's weighted random draw, even with rarity=200.
+        //
+        // We set every spawn-critical field at runtime via reflection so
+        // the values are written against the Windows type tree, not the
+        // Mac one. This is robust regardless of bundle build origin.
+        Log.LogInfo($"[StillLife] EnemyType loaded: name='{enemy.enemyName}' " +
+                   $"PowerLevel={enemy.PowerLevel} MaxCount={enemy.MaxCount} " +
+                   $"isOutside={enemy.isOutsideEnemy} isDaytime={enemy.isDaytimeEnemy} " +
+                   $"spawningDisabled={enemy.spawningDisabled}");
+        ForceEnemyTypeOverrides(enemy);
+        Log.LogInfo($"[StillLife] EnemyType AFTER overrides: " +
+                   $"PowerLevel={enemy.PowerLevel} MaxCount={enemy.MaxCount} " +
+                   $"isOutside={enemy.isOutsideEnemy} isDaytime={enemy.isDaytimeEnemy} " +
+                   $"spawningDisabled={enemy.spawningDisabled}");
 
         // The Unity prefab ships WITHOUT the AI script and WITHOUT the game's
         // EnemyAICollisionDetect script (so the Unity project never needs the
@@ -173,13 +200,82 @@ public class Plugin : BaseUnityPlugin
                 node,
                 keyword);
 
-            Log.LogInfo($"Registered enemy 'The Still Life' with spawn weight {SpawnWeight.Value}.");
+            Log.LogInfo($"Registered enemy 'The Still Life' with spawn weight {SpawnWeight.Value} and max count {SpawnMaxCount.Value}.");
         }
         catch (System.Exception regEx)
         {
             Log.LogError($"Failed to register 'The Still Life' enemy: {regEx.GetType().Name}: {regEx.Message}");
             Log.LogError($"Stack: {regEx.StackTrace}");
             throw;  // Re-throw so Awake fails loudly instead of silently.
+        }
+    }
+
+    // Force-override the spawn-critical fields on an EnemyType at runtime.
+    // The Mac-built bundle can have its serialized field values silently
+    // dropped when the Windows game deserializes it (type-tree hash mismatch).
+    // Setting the fields at runtime via reflection writes them against the
+    // Windows type tree, so they persist into the spawn pool regardless.
+    //
+    // We use BOTH the publicised fields (when the publicised NuGet has the
+    // right field names) AND reflection fallbacks (when the publicised NuGet
+    // is out of date with the actual game version), so this is robust across
+    // game updates.
+    private static void ForceEnemyTypeOverrides(EnemyType enemy)
+    {
+        // PowerLevel: most critical. If this is 0, the enemy takes 0 power
+        // budget and is never picked. Force to 1.
+        SafeSetField(enemy, "PowerLevel", 1f, "float");
+        SafeSetField(enemy, "MaxCount", SpawnMaxCount.Value, "int");
+        // probabilityCurve: a flat curve means equal probability across all
+        // hours of the day. Default if missing would be a null curve, which
+        // can also silently disable the enemy.
+        SafeSetField(enemy, "probabilityCurve", new AnimationCurve(
+            new Keyframe(0f, 1f), new Keyframe(1f, 1f)), "AnimationCurve");
+        SafeSetField(enemy, "numberSpawnedFalloff", new AnimationCurve(
+            new Keyframe(0f, 0f), new Keyframe(1f, 1f)), "AnimationCurve");
+        SafeSetField(enemy, "useNumberSpawnedFalloff", false, "bool");
+        // Spawn flags: must be indoor-only, not daytime.
+        SafeSetField(enemy, "isOutsideEnemy", false, "bool");
+        SafeSetField(enemy, "isDaytimeEnemy", false, "bool");
+        SafeSetField(enemy, "spawningDisabled", false, "bool");
+        // Combat config: must be killable, destroyable, stunnable. The Mac
+        // bundle's defaults would let the game treat this as invincible.
+        SafeSetField(enemy, "canDie", true, "bool");
+        SafeSetField(enemy, "canBeDestroyed", true, "bool");
+        SafeSetField(enemy, "canBeStunned", true, "bool");
+        SafeSetField(enemy, "destroyOnDeath", false, "bool");
+        SafeSetField(enemy, "stunTimeMultiplier", 1f, "float");
+        SafeSetField(enemy, "stunGameDifficultyMultiplier", 1f, "float");
+        SafeSetField(enemy, "loudnessMultiplier", 1f, "float");
+    }
+
+    // Reflection-safe field setter. Tries the typed property first (works
+    // when the publicised NuGet matches the actual game). Falls back to
+    // GetField with BindingFlags.NonPublic (works for private fields). Logs
+    // and skips anything it can't find.
+    private static void SafeSetField(object obj, string name, object value, string typeName)
+    {
+        var t = obj.GetType();
+        // Try the property first (publicised fields become properties).
+        var prop = t.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+        if (prop != null && prop.CanWrite)
+        {
+            try { prop.SetValue(obj, value); return; }
+            catch (System.Exception ex) { Log.LogWarning($"[StillLife] Set property {name} failed: {ex.Message}"); }
+        }
+        // Fall back to the underlying field.
+        var field = t.GetField(name,
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        if (field == null)
+        {
+            // Not an error — just means this field doesn't exist on this
+            // game version. Skip silently.
+            return;
+        }
+        try { field.SetValue(obj, value); }
+        catch (System.Exception ex)
+        {
+            Log.LogWarning($"[StillLife] Set field {name} ({typeName}) failed: {ex.Message}");
         }
     }
 }
