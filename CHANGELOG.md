@@ -2,6 +2,17 @@
 
 All notable changes to LethalPirateClark are documented in this file. Dates are YYYY-MM-DD.
 
+## [1.0.2] - 2026-06-06
+
+### Fixed
+- **Pirate Clark was not spawning in v1.0.1** — the Mac-built `stilllife` asset bundle has a different type-tree hash from the Windows game's `Assembly-CSharp.dll`, so the EnemyType fields (especially `PowerLevel`) were being silently dropped to their defaults when the Windows game deserialized the bundle. With `PowerLevel` defaulting to 0, the enemy took 0 power budget and was never picked by the spawner's weighted random draw.
+- Added `ForceEnemyTypeOverrides()` in `Plugin.cs` — sets every spawn-critical field on the EnemyType at runtime via reflection (tries the publicised property first, falls back to `BindingFlags.NonPublic` field), so the values are written against the Windows type tree and persist into the spawn pool.
+- Added before/after field-value logging in `BepInEx/LogOutput.log` so the next time something's wrong, you'll see the actual numeric values of `PowerLevel`, `MaxCount`, `isOutsideEnemy`, `isDaytimeEnemy`, `spawningDisabled` — before AND after the override.
+
+### Changed
+- Default `Spawn.Rarity` raised from 200 to **1000** (effectively always-pick for a `PowerLevel=1` enemy; game internally caps at ~1000)
+- Added a new `Spawn.MaxCount` config (default 8) — controls how many Pirate Clarks can be alive on a level simultaneously. Previously hardcoded at 4 in the bundle.
+
 ## [1.0.1] - 2026-06-06
 
 ### Changed
