@@ -54,61 +54,31 @@ public class StillLifeAI : EnemyAI
     {
         try
         {
-            if (!IsSpawned)
-            {
-                // The inert prefab template (kept active so Netcode can clone
-                // it, but never network-spawned itself). Log a one-line fingerprint
-                // for the template so a v1.3.2 log can tell template from clone.
-                if (!_startLogged)
-                {
-                    _startLogged = true;
-                    Plugin.Log.LogInfo($"[StillLife] CLONE FINGERPRINT (template, !IsSpawned): " +
-                        $"name='{name}', pos={transform.position:F2}, scale={transform.localScale:F2}, " +
-                        $"active={gameObject.activeSelf}/{gameObject.activeInHierarchy}");
-                }
-                return;
-            }
+            // The inert prefab template (kept active so Netcode can clone it,
+            // but never network-spawned itself) reaches Start too — skip it.
+            if (!IsSpawned) return;
+
             base.Start();
             baseSpeed = Plugin.MoveSpeed.Value;
             currentBehaviourStateIndex = (int)State.Dormant;
             Plugin.LiveStillLives++;
-            // v1.0.4: log exactly where we spawned so the user can find us.
-            Plugin.Log.LogInfo($"[StillLife] Pirate Clark SPAWNED at {transform.position:F1} (round time {StartOfRound.Instance?.currentLevel?.name ?? "unknown"}). LiveStillLives={Plugin.LiveStillLives}");
 
-            // v1.3.3: force the voice source to 2D audio so it's audible from
-            // anywhere on the map. The previous 3D positional setup (minDist=4,
-            // maxDist=32) made the ambient loop inaudible when the clone
-            // spawned far from the player. We keep the AudioListener-aware
-            // settings but kill the spatial blend so volume is constant.
+            // Ambient loop is 2D so it's audible from anywhere on the map (a
+            // creeping presence cue), independent of where the clone spawned.
             if (voiceSource != null)
             {
-                voiceSource.spatialBlend = 0f;  // pure 2D
+                voiceSource.spatialBlend = 0f;
                 voiceSource.minDistance = 0f;
                 voiceSource.maxDistance = 500f;
                 voiceSource.volume = 1f;
             }
 
-            // v1.3.3 diagnostic: one comprehensive line per clone with every
-            // field that could explain "floats, doesn't move, no sound, small".
             if (!_startLogged)
             {
                 _startLogged = true;
-                string voiceStatus = voiceSource != null
-                    ? $"play={voiceSource.isPlaying} clip={(voiceSource.clip != null ? "set" : "NULL")} " +
-                      $"blend={voiceSource.spatialBlend:F1} min={voiceSource.minDistance:F1} max={voiceSource.maxDistance:F1}"
-                    : "NULL";
-                string agentStatus = agent != null
-                    ? $"onNavMesh={agent.isOnNavMesh} enabled={agent.enabled} stopped={agent.isStopped}"
-                    : "NULL";
-                Plugin.Log.LogInfo($"[StillLife] CLONE FINGERPRINT: " +
-                    $"name='{name}', " +
-                    $"pos={transform.position:F2}, scale={transform.localScale:F2}, " +
-                    $"active={gameObject.activeSelf}/{gameObject.activeInHierarchy}, " +
-                    $"IsOwner={IsOwner}, IsServer={IsServer}, IsHost={IsHost}, IsClient={IsClient}, IsSpawned={IsSpawned}, " +
-                    $"NetworkObjectId={(NetworkObject?.NetworkObjectId ?? 0)}, " +
-                    $"OwnerClientId={(NetworkObject?.OwnerClientId ?? 0)}, " +
-                    $"enemyType={(enemyType != null ? enemyType.enemyName : "NULL")}, " +
-                    $"agent=({agentStatus}), voice=({voiceStatus})");
+                Plugin.Log.LogInfo($"[StillLife] Pirate Clark spawned at {transform.position:F1} " +
+                    $"(IsServer={IsServer}, IsSpawned={IsSpawned}, agent={(agent != null ? "ok" : "NULL")}). " +
+                    $"LiveStillLives={Plugin.LiveStillLives}.");
             }
 
             // Make sure the NavMeshAgent is actually on a NavMesh, or he can't
@@ -351,10 +321,21 @@ public class StillLifeAI : EnemyAI
             }
         }
 
-        // Hide the original corpse so it visually "becomes" the new entity.
-        if (player.deadBody != null) player.deadBody.gameObject.SetActive(false);
+        // Hide the original corpse on every peer so it visually "becomes" the
+        // new entity. v2.0.0: this used to run server-only, so co-op clients
+        // kept seeing the old ragdoll. Now weaved RPCs work, so broadcast it.
+        HideCorpseClientRpc(playerId);
 
-        Plugin.Log.LogInfo($"Still Life copied player {playerId} into a new entity.");
+        Plugin.Log.LogInfo($"[StillLife] Copied player {playerId} into a new Still Life. LiveStillLives={Plugin.LiveStillLives}.");
+    }
+
+    [ClientRpc]
+    private void HideCorpseClientRpc(int playerId)
+    {
+        if (playerId < 0 || playerId >= StartOfRound.Instance.allPlayerScripts.Length) return;
+        var player = StartOfRound.Instance.allPlayerScripts[playerId];
+        if (player != null && player.deadBody != null)
+            player.deadBody.gameObject.SetActive(false);
     }
 
     // --- Light flicker & doors ----------------------------------------------

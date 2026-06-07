@@ -22,10 +22,6 @@ internal class StillLifeWatchdog : MonoBehaviour
 {
     private float _timer;
     private int _lastCloneCount = -1;
-    // v1.3.2: track the last per-clone noteworthy-state key so we don't spam
-    // the log every 0.5s. (h << 16) | (instanceID & 0xFFFF) — re-logs only
-    // when the set of problems on this clone changes.
-    private int _lastPerCloneKey;
     // v1.3.4: per-clone stuck-detection state. If a clone's transform hasn't
     // changed in 3 seconds, we assume it's stuck (agent not on NavMesh, or
     // AI loop not running for whatever reason) and teleport it next to a
@@ -62,43 +58,8 @@ internal class StillLifeWatchdog : MonoBehaviour
                 Plugin.Log.LogInfo($"[StillLife] Watchdog ACTIVATED a Pirate Clark clone at {go.transform.position:F1} (was inactive).");
             }
 
-            // v1.4.0: no more scale-forcing. The bundle prefab carries the
-            // model's correct scale baked in the editor, so overriding it here
-            // (the old runtime path hardcoded 1.25×) would distort the real
-            // model. Scale is left exactly as the prefab defines it.
-
-            // v1.3.2 per-clone diagnostic: log a one-liner only when the
-            // clone's state is non-default (inactive or NetworkObject.IsSpawned
-            // == false — the latter is the key signal that NGO failed to network-
-            // spawn the clone). Includes an int hash so we only re-log on change.
-            bool isInActive = !go.activeSelf; // post-activation, this is false
-            var scale = go.transform.localScale;
-            bool netSpawned = false;
-            try
-            {
-                var no = ai.NetworkObject; // EnemyAI exposes NetworkObject
-                if (no != null)
-                {
-                    var p = no.GetType().GetProperty("IsSpawned");
-                    if (p != null) netSpawned = (bool)p.GetValue(no);
-                }
-            }
-            catch { /* NetworkObject may be null; treat as not-spawned */ }
-
-            if (isInActive || !netSpawned)
-            {
-                // Compose a small int fingerprint of the noteworthy bits so we
-                // re-log only when the set of problems changes per-clone.
-                int h = (isInActive ? 1 : 0)
-                      | (netSpawned ? 0 : 8);
-                int perCloneKey = (h << 16) | (go.GetInstanceID() & 0xFFFF);
-                if (perCloneKey != _lastPerCloneKey)
-                {
-                    _lastPerCloneKey = perCloneKey;
-                    Plugin.Log.LogInfo($"[StillLife] Watchdog per-clone state on '{go.name}' (id={go.GetInstanceID()}): " +
-                        $"inactive={isInActive}, scale={scale:F2}, NetworkObject.IsSpawned={netSpawned}.");
-                }
-            }
+            // Scale is left exactly as the bundle prefab defines it (no
+            // runtime scale-forcing — that distorted the real model).
 
             // v1.3.4: stuck-detection. If this clone's transform hasn't moved
             // in 3+ seconds, the AI isn't running (or agent is off-mesh and

@@ -59,10 +59,14 @@ Edit `BepInEx/config/com.TESTYEE-09.lethalpirateclark.cfg`:
 
 | Section | Key | Default | Description |
 |---------|-----|---------|-------------|
-| `Spawn` | `Rarity` | `200` | Relative spawn weight on indoor moons. Higher = more common. **200 is the v1.0.1 "I want to actually see him" value** — set to `30-50` for a "feels rare" experience. |
+| `Spawn` | `Rarity` | `40` | Relative spawn weight on indoor moons. Higher = more common. `40` reads as "an uncommon scare"; raise toward `200-1000` to encounter him constantly. |
+| `Spawn` | `MaxCount` | `1` | How many Pirate Clarks can be alive at once on a level. `1` = one at a time. Phase-2 conversions are bounded separately by `Conversion.MaxAlive`. |
 | `Behaviour` | `MoveSpeed` | `3.2` | Base movement speed in m/s when unobserved. Ramps up the longer he stays unseen, capped at 8 m/s. |
+| `Behaviour` | `FreezeWhenWatched` | `false` | If `true`, he freezes while any player looks at him (classic "Still Life"). Default `false` keeps him advancing even while watched, like the Backrooms movie. |
 | `Conversion` | `Enabled` | `true` | Phase 2: when he kills a player, the corpse rises as a new Still Life. Set to `false` to disable. |
 | `Conversion` | `MaxAlive` | `4` | Hard cap on simultaneous Still Lifes (including the original Pirate Clark + any conversions). Prevents the level from snowballing. |
+
+> **Co-op:** as of v2.0.0 the kill, eat sound, and Phase-2 conversion are network-replicated, so every player in the lobby sees and hears them — not just the host. Install the mod on all players in the lobby.
 
 ---
 

@@ -2,6 +2,18 @@
 
 All notable changes to LethalPirateClark are documented in this file. Dates are YYYY-MM-DD.
 
+## [2.0.0] - 2026-06-07
+
+### Co-op hardening + polish — the kill actually networks now
+v1.4.1 made Pirate Clark spawn, render, and move correctly on the host. v2.0.0 makes him behave correctly for **everyone in a co-op lobby**, and trims the build down from a pile of diagnostics to a release.
+
+- **The real co-op bug — RPCs were never weaved.** `StillLifeAI` is a `NetworkBehaviour` with `[ClientRpc]` methods (`GrabPlayerClientRpc`, and now `HideCorpseClientRpc`). Unity normally runs a Netcode IL post-processor over `NetworkBehaviour`s to generate the RPC send/receive plumbing — but this DLL is compiled **outside** Unity (plain `dotnet build`), so that step never ran. The result: calling `GrabPlayerClientRpc` just executed its body locally on the server and **never reached remote clients**. In practice the host saw the grab/kill/eat-sound; a non-host player being grabbed did not. Fixed by adding the **`Evaisa.NetcodePatcher.MSBuild`** SDK (post-build IL weave, Unity `2022.3.62` / Netcode `1.12.2`) plus a one-time `[RuntimeInitializeOnLoadMethod]` invoker in `Plugin.Awake` (`InitializeNetworkRpcs`) so the weaver-injected RPC initializers actually register. Verified: the patched DLL now carries `__rpc_handler_*`, `__beginSendClientRpc`, `__initializeRpcs`.
+- **Phase-2 conversion now replicates.** Hiding the converted player's corpse used to run server-only, so co-op clients kept seeing the old ragdoll next to the new Still Life. It's now a `HideCorpseClientRpc` broadcast to every peer (works because RPCs are weaved).
+- **Sane default config.** `Spawn.Rarity` dropped from the `1000` test value to **`40`** (an uncommon scare; raise to taste), and `Spawn.MaxCount` from `8` to **`1`** (one at a time). Added a `Behaviour.FreezeWhenWatched` row to the README table.
+- **Bestiary entry.** The `TerminalNode`/`TerminalKeyword` baked into the bundle (`StillLifeFile` / `StillLifeKeyword`) are now loaded and passed to `Enemies.RegisterEnemy`, so Pirate Clark gets a proper terminal scan/bestiary entry. Falls back gracefully to no-entry if absent.
+- **Logging trimmed to a release.** Removed the v1.3.x `CLONE FINGERPRINT` blocks, per-spawn pipeline fingerprints, and the watchdog's per-clone state spam (all were diagnostics for the now-solved spawn bugs). Kept one concise spawn line, the navmesh-snap warning, and the watchdog's silent stuck-recovery safety net.
+- No model/audio/bundle changes — the `stilllife` bundle is byte-identical to v1.4.1; only the DLL changed.
+
 ## [1.4.1] - 2026-06-06
 
 ### Rebuild the bundle for the game's actual Unity version

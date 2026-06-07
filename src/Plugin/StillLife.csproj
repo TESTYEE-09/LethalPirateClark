@@ -1,0 +1,67 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- v2.0.0: import the Netcode Patcher MSBuild SDK so the built DLL gets the
+       same IL post-processing Unity's Netcode code-gen does. Without this,
+       StillLifeAI's [ClientRpc] methods never network to remote clients. -->
+  <Sdk Name="Evaisa.NetcodePatcher.MSBuild" Version="4.5.0" />
+
+  <PropertyGroup>
+    <!-- Lethal Company runs on .NET Standard 2.1 (Unity 2022.3 / Mono). -->
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>com.TESTYEE-09.lethalpirateclark</AssemblyName>
+    <Product>StillLife</Product>
+    <Version>2.0.0</Version>
+    <LangVersion>latest</LangVersion>
+    <Nullable>annotations</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- Lets BepInEx attributes & NuGet game libs resolve cleanly. -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- BepInEx plugin framework + Harmony patching. -->
+    <PackageReference Include="BepInEx.Core" Version="5.4.21" />
+    <PackageReference Include="BepInEx.PluginInfoProps" Version="2.1.0" />
+    <PackageReference Include="HarmonyX" Version="2.10.1" />
+
+    <!-- Publicized Lethal Company game assemblies straight from NuGet.
+         Pinned to the cached v81 build for a deterministic offline restore. -->
+    <PackageReference Include="LethalCompany.GameLibs.Steam"
+                      Version="81.0.5-ngd.0"
+                      PrivateAssets="all"
+                      Publicize="true" />
+
+    <!-- Consumes Publicize="true" above so private/internal game members
+         (EnemyAI fields, etc.) are accessible at compile time. -->
+    <PackageReference Include="BepInEx.AssemblyPublicizer.MSBuild" Version="0.4.1"
+                      PrivateAssets="all" />
+
+    <!-- Helper lib for registering custom enemies / items into the game. -->
+    <PackageReference Include="Evaisa.LethalLib" Version="0.16.0" />
+
+  </ItemGroup>
+
+  <!-- Patch the built DLL with the Netcode weaver, using the same Unity /
+       Netcode / Transport versions the live game ships (Unity 2022.3.62,
+       Netcode 1.12.2) — the documented working combo for Lethal Company.
+       PortablePDB is required by the patcher (Full symbols are rejected). -->
+  <PropertyGroup>
+    <DebugType>portable</DebugType>
+    <NetcodePatcherUnityVersion>2022.3.62</NetcodePatcherUnityVersion>
+    <NetcodePatcherNetcodeVersion>1.12.2</NetcodePatcherNetcodeVersion>
+    <NetcodePatcherTransportVersion>1.0.0</NetcodePatcherTransportVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Tell the weaver which assembly to patch: our build output. -->
+    <NetcodePatch Include="$(TargetPath)" />
+  </ItemGroup>
+
+  <!-- NOTE (v1.4.0): the enemy is loaded from the Unity asset bundle now, so
+       the old embedded mesh/texture/audio resources are no longer needed and
+       were dropped (ObjMeshLoader/TextureLoader/WavLoader are unused). The
+       bundle 'stilllife' ships next to this DLL and carries the model + audio. -->
+
+</Project>

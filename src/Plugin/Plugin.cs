@@ -13,13 +13,13 @@ using UnityEngine.AI;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "1.4.1")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "2.0.0")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "1.4.1";
+    public const string Version = "2.0.0";
 
     internal static ManualLogSource Log = null!;
 
@@ -45,13 +45,23 @@ public class Plugin : BaseUnityPlugin
     {
         Log = Logger;
 
-        SpawnWeight = Config.Bind("Spawn", "Rarity", 1000,
+        // v2.0.0 co-op fix: run the Netcode-weaver-injected RPC initializers.
+        // The patcher (NetcodePatcher MSBuild SDK) marks them with
+        // [RuntimeInitializeOnLoadMethod], which Unity would normally call on
+        // class load — but our assembly isn't managed by Unity, so we invoke
+        // them once here. Without this, StillLifeAI's ClientRpcs are never
+        // registered and never reach remote clients. Guarded so a missing
+        // weaver (e.g. an unpatched debug build) can't break plugin load.
+        InitializeNetworkRpcs();
+
+        SpawnWeight = Config.Bind("Spawn", "Rarity", 40,
             "Relative spawn weight on indoor levels. Higher = more common. " +
-            "Bumped to 1000 for v81 testing — set to 30-50 for a 'feels rare' experience. " +
-            "Maximum useful value is around 1000 (game caps it internally).");
-        SpawnMaxCount = Config.Bind("Spawn", "MaxCount", 8,
+            "Default 40 reads as 'an uncommon scare'. Raise toward 200-1000 to " +
+            "test/encounter him constantly (the game caps the weight internally).");
+        SpawnMaxCount = Config.Bind("Spawn", "MaxCount", 1,
             "Hard cap on how many Pirate Clarks can be alive at once on a level. " +
-            "Bumped from 4 to 8 for testing — set to 1 for a 'one at a time' experience.");
+            "Default 1 ('one at a time'). Raise for a swarm. Note Phase-2 " +
+            "conversions are bounded separately by Conversion.MaxAlive.");
         MoveSpeed = Config.Bind("Behaviour", "MoveSpeed", 3.2f,
             "Base movement speed (m/s) when unobserved. Ramps up the longer it goes unseen.");
         FreezeWhenWatched = Config.Bind("Behaviour", "FreezeWhenWatched", false,
@@ -83,6 +93,40 @@ public class Plugin : BaseUnityPlugin
         watchdogGo.AddComponent<StillLifeWatchdog>();
 
         Log.LogInfo($"{Name} v{Version} loaded.");
+    }
+
+    // Invoke every [RuntimeInitializeOnLoadMethod] in this assembly exactly
+    // once. The Netcode weaver injects one such method per NetworkBehaviour
+    // (InitializeRPCS_*) to register its RPC handlers with NGO's static
+    // dispatch tables. See NetcodePatcher README. Runs only once (Awake).
+    private static void InitializeNetworkRpcs()
+    {
+        try
+        {
+            var types = Assembly.GetExecutingAssembly().GetTypes();
+            int invoked = 0;
+            foreach (var type in types)
+            {
+                var methods = type.GetMethods(BindingFlags.NonPublic | BindingFlags.Instance |
+                                              BindingFlags.Static | BindingFlags.Public);
+                foreach (var method in methods)
+                {
+                    if (method.GetCustomAttributes(typeof(RuntimeInitializeOnLoadMethodAttribute), false).Length > 0)
+                    {
+                        method.Invoke(null, null);
+                        invoked++;
+                    }
+                }
+            }
+            Log.LogInfo($"[StillLife] Netcode RPC init: invoked {invoked} weaver method(s).");
+            if (invoked == 0)
+                Log.LogWarning("[StillLife] No RPC initializers found — DLL may be unpatched. " +
+                    "Co-op RPCs (grab/eat/state) will NOT reach remote clients.");
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogError($"[StillLife] Netcode RPC init failed: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     // v1.4.0: load the enemy from the Unity-built asset bundle instead of
@@ -148,17 +192,22 @@ public class Plugin : BaseUnityPlugin
             Log.LogWarning($"[StillLife] NetworkPrefabs.RegisterNetworkPrefab failed (non-fatal): {npEx.Message}");
         }
 
-        // Register with LethalLib. No TerminalNode/Keyword wired here — optional;
-        // the enemy spawns fine without a bestiary entry.
+        // v2.0.0: wire the bestiary/terminal scan entry baked into the bundle
+        // so "Pirate Clark" shows up in the terminal's bestiary after a scan.
+        // Optional — if the assets are missing the enemy still spawns fine.
+        var infoNode = _bundle.LoadAsset<TerminalNode>("StillLifeFile");
+        var infoKeyword = _bundle.LoadAsset<TerminalKeyword>("StillLifeKeyword");
+
         Enemies.RegisterEnemy(
             enemy,
             SpawnWeight.Value,
             Levels.LevelTypes.All,
             Enemies.SpawnType.Default,
-            null,
-            null);
+            infoNode,
+            infoKeyword);
 
-        Log.LogInfo($"[StillLife] Registered '{enemy.enemyName}' from bundle — rarity {SpawnWeight.Value}, max alive {SpawnMaxCount.Value}.");
+        Log.LogInfo($"[StillLife] Registered '{enemy.enemyName}' from bundle — rarity {SpawnWeight.Value}, " +
+            $"max alive {SpawnMaxCount.Value}, bestiary={(infoNode != null ? "yes" : "no")}.");
     }
 
     // Add the runtime-only components the bundle deliberately leaves out (the
