@@ -42,13 +42,13 @@ This mod is **not affiliated with Kane Pixels, Slightlyoversizedsweater, or Zeek
 
 ### Manual install
 1. Install BepInExPack and LethalLib (above)
-2. Extract `LethalPirateClark_v1.0.1.zip` to your `Lethal Company/` directory
+2. Extract `LethalPirateClark_v3.0.0.zip` to your `Lethal Company/` directory
 3. Confirm the install looks like:
    ```
    Lethal Company/BepInEx/plugins/LethalPirateClark/
-   ├── com.TESTYEE-09.lethalpirateclark.dll
-   └── stilllife
+   └── com.TESTYEE-09.lethalpirateclark.dll
    ```
+   (As of v3.0.0 the mod ships a single DLL — no `stilllife` asset bundle. The prefab is built in C# at load time, so the install is one file, like every other BepInEx plugin.)
 4. Launch the game
 
 ---

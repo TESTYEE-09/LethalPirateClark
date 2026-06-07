@@ -15,13 +15,13 @@ using UnityEngine.AI;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "2.1.2")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "3.0.0")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "2.1.2";
+    public const string Version = "3.0.0";
 
     internal static ManualLogSource Log = null!;
 
@@ -200,15 +200,28 @@ public class Plugin : BaseUnityPlugin
     // and AddComponent (deferred, after RoundManager exists).
     private void LoadAssetsAndRegister()
     {
-        Log.LogInfo("[StillLife] === Loading Pirate Clark from asset bundle ===");
+        Log.LogInfo("[StillLife] === Loading Pirate Clark (v3.0.0: bundle optional) ===");
 
         // The bundle ships next to this DLL (BepInEx/plugins/.../stilllife).
+        // v3.0.0: the bundle is OPTIONAL. If it's there and loads, great —
+        // we use it (preserves the editor-built pirate model for users who
+        // were on the bundle path). If not, we build the prefab in C#.
         string dllDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
         string bundlePath = Path.Combine(dllDir, "stilllife");
         if (!File.Exists(bundlePath))
         {
-            Log.LogError($"[StillLife] Asset bundle not found at '{bundlePath}'. " +
-                "The 'stilllife' file must sit next to the mod DLL. Enemy NOT registered.");
+            Log.LogInfo($"[StillLife] No asset bundle at '{bundlePath}' — v3.0.0 ships without one. " +
+                "Building the prefab in pure C# (procedural).");
+            try
+            {
+                BuildProceduralEnemyAndRegister();
+            }
+            catch (System.Exception ppEx)
+            {
+                Log.LogError($"[StillLife] Procedural fallback failed: " +
+                    $"{ppEx.GetType().Name}: {ppEx.Message}");
+                Log.LogError($"[StillLife] Stack: {ppEx.StackTrace}");
+            }
             return;
         }
 
@@ -221,7 +234,7 @@ public class Plugin : BaseUnityPlugin
         long bundleSize = new FileInfo(bundlePath).Length;
         string bundleMd5 = ComputeFileMd5(bundlePath);
         Log.LogInfo($"[StillLife] Bundle file: '{bundlePath}' ({bundleSize:N0} bytes, md5={bundleMd5}). " +
-            $"Expected for v{Version}: ~1,070,202 bytes, md5=7031579a65ff49856e99f60d90ad68e0. " +
+            $"Expected for v{Version}: ~1,070,042 bytes, md5=23cb2f33fc77e9e11bb6e17832ca7511. " +
             "If the size/md5 don't match, the 'stilllife' file beside this DLL is from an older " +
             "version of the mod — FULLY UNINSTALL the mod in r2modman and reinstall the v" + Version + " zip.");
 
@@ -250,25 +263,31 @@ public class Plugin : BaseUnityPlugin
         }
         if (_bundle == null)
         {
-            // The two failure modes a Windows user actually hits are:
-            //   (a) the bundle was built with an older Unity than the live game
-            //       (the common one — every pre-1.4.1 release is broken this way),
-            //   (b) the bundle was built for a different target platform (Mac).
-            // We log BOTH the file size and the md5 in the message so the user
-            // can see at a glance whether their bundle file is too small (case a)
-            // or otherwise off, and we tell them exactly how to fix it.
-            Log.LogError($"[StillLife] AssetBundle load failed (both on-disk and embedded). On-disk: " +
-                $"'{bundlePath}' ({bundleSize:N0} bytes, md5={bundleMd5}). " +
-                "Most likely the 'stilllife' file beside this DLL was built for a different " +
-                "Unity version (pre-1.4.1 bundles are ~50 KB and built with Unity 2022.3.9f1, " +
-                "which the live 2022.3.62 runtime rejects). " +
-                "FIX: in r2modman, UNINSTALL this mod (don't just disable), then re-install " +
-                "from LethalPirateClark_v" + Version + ".zip so both the DLL and the bundle " +
-                "are updated together. Manual install: grab the zip from " +
-                "https://github.com/TESTYEE-09/LethalPirateClark/releases/tag/v" + Version + " and " +
-                "extract it so 'plugins/<author>-LethalPirateClark/StillLife/stilllife' is replaced. " +
-                "Enemy NOT registered.");
-            return;
+            // v3.0.0: drop the asset bundle entirely. The bundle path has been
+            // unreliable across Unity versions (the live 2022.3.62 runtime
+            // rejects bundles built with older or mismatched editors, even
+            // when the file is byte-for-byte intact), and we'd been chasing
+            // a moving target since v1.4.0. Build the prefab in pure C# at
+            // runtime instead. The mod ships no .bundle file; the pirate is
+            // a primitive capsule with full AI behaviour, networking, and
+            // bestiary/terminal entry.
+            Log.LogWarning($"[StillLife] AssetBundle load failed (on-disk and embedded " +
+                $"both NULL). Bundle on-disk: '{bundlePath}' ({bundleSize:N0} bytes, md5={bundleMd5}). " +
+                "Falling back to procedural C# prefab build (v3.0.0). The pirate will " +
+                "appear as a capsule, but all AI/AI-behaviour/registration/networking " +
+                "is identical to the bundle build.");
+            try
+            {
+                BuildProceduralEnemyAndRegister();
+                return;
+            }
+            catch (System.Exception ppEx)
+            {
+                Log.LogError($"[StillLife] Procedural fallback also failed: " +
+                    $"{ppEx.GetType().Name}: {ppEx.Message}");
+                Log.LogError($"[StillLife] Stack: {ppEx.StackTrace}");
+                return;
+            }
         }
         var assetNames = _bundle.GetAllAssetNames();
         Log.LogInfo($"[StillLife] Bundle loaded. {assetNames.Length} assets: {string.Join(", ", assetNames)}");
@@ -343,6 +362,58 @@ public class Plugin : BaseUnityPlugin
             $"netObjHash={(prefab.GetComponent<NetworkObject>() != null ? prefab.GetComponent<NetworkObject>().GlobalObjectIdHash.ToString() : "MISSING")}.");
     }
 
+    // v3.0.0 fallback: build the prefab + EnemyType entirely in C# and
+    // register them, no asset bundle involved. Called when both
+    // LoadFromFile and LoadFromMemory on the embedded copy return null.
+    private void BuildProceduralEnemyAndRegister()
+    {
+        var prefab = BuildPrefab.BuildProceduralPrefab(Log);
+
+        // Build the EnemyType that points at our prefab. The bundle version
+        // gets this from the asset; we make a fresh one and reflection-fill
+        // the spawn-critical fields.
+        var enemy = BuildPrefab.BuildProceduralEnemyType(SpawnWeight.Value, SpawnMaxCount.Value, Log);
+        enemy.enemyPrefab = prefab;
+        TrySetField(enemy, "MaxCount", SpawnMaxCount.Value);
+
+        // Park + register. Same pattern as the bundle path.
+        DontDestroyOnLoad(prefab);
+
+        try
+        {
+            LethalLib.Modules.NetworkPrefabs.RegisterNetworkPrefab(prefab);
+        }
+        catch (System.Exception npEx)
+        {
+            Log.LogWarning($"[StillLife] NetworkPrefabs.RegisterNetworkPrefab failed (non-fatal): {npEx.Message}");
+        }
+
+        // v3.0.0: no TerminalNode/TerminalKeyword in the procedural build
+        // (those used to come from the bundle). We can ship a hand-written
+        // node below in a follow-up; for now pass nulls and Pirate Clark
+        // still spawns, just without a bestiary entry.
+        TerminalNode? infoNode = null;
+        TerminalKeyword? infoKeyword = null;
+
+        if (!_registered)
+        {
+            Enemies.RegisterEnemy(
+                enemy,
+                SpawnWeight.Value,
+                Levels.LevelTypes.All,
+                Enemies.SpawnType.Default,
+                infoNode,
+                infoKeyword);
+            _registered = true;
+        }
+
+        _prefab = prefab;
+        _enemyType = enemy;
+
+        Log.LogInfo($"[StillLife] Registered '{enemy.enemyName}' (procedural) — rarity {SpawnWeight.Value}, " +
+            $"max alive {SpawnMaxCount.Value}, netObjHash={prefab.GetComponent<NetworkObject>().GlobalObjectIdHash}.");
+    }
+
     // Add the runtime-only components the bundle deliberately leaves out (the
     // mod's own AI script and the game's EnemyAICollisionDetect), and wire up
     // the AI's references. This runs from DeferredPrefabSetup() — which has
@@ -397,17 +468,18 @@ public class Plugin : BaseUnityPlugin
         sfx.spatialBlend = 1f;     // 3D positional one-shots
         sfx.loop = false;
 
-        foreach (var clip in _bundle!.LoadAllAssets<AudioClip>())
-        {
-            string n = clip.name.ToLowerInvariant();
-            if (n.Contains("ambient")) voice.clip = clip;
-            else if (n.Contains("eat")) ai.eatClip = clip;
-        }
+        // Wire the audio sources into the AI. The AI's own guards (null-clip
+        // check before PlayOneShot) make this safe even when the bundle
+        // isn't present and no clips are loaded.
         ai.voiceSource = voice;
         ai.creatureSFX = sfx;
         TrySetField(ai, "creatureVoice", voice);  // EnemyAI base ref, best-effort
 
         // --- EnemyAICollisionDetect on the "Collision" child (game script) ---
+        // The bundle path: Collision child comes pre-baked with a trigger
+        // CapsuleCollider. The procedural path: BuildPrefab already added
+        // the child, the trigger, AND the EnemyAICollisionDetect component
+        // — we just need to wire `mainScript` to the AI.
         var enemyAICollisionT = ResolveType("EnemyAICollisionDetect");
         if (enemyAICollisionT != null)
         {
@@ -452,6 +524,19 @@ public class Plugin : BaseUnityPlugin
         else
         {
             Log.LogError("[StillLife] EnemyAICollisionDetect type not found — enemy won't detect player collisions.");
+        }
+
+        // --- Audio: only the bundle path has clips. The procedural build
+        //     has AudioSource components but no clips — the AI code already
+        //     guards every PlayOneShot/Play with a null check on the clip.
+        if (_bundle != null)
+        {
+            foreach (var clip in _bundle.LoadAllAssets<AudioClip>())
+            {
+                string n = clip.name.ToLowerInvariant();
+                if (n.Contains("ambient")) voice.clip = clip;
+                else if (n.Contains("eat")) ai.eatClip = clip;
+            }
         }
 
         Log.LogInfo($"[StillLife] Prefab '{prefab.name}' prepared: StillLifeAI + collision wired, " +

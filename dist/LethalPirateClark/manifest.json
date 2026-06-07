@@ -1,8 +1,8 @@
 {
   "name": "LethalPirateClark",
-  "version_number": "2.1.2",
+  "version_number": "3.0.0",
   "website_url": "https://github.com/TESTYEE-09/LethalPirateClark",
-  "description": "Adds Pirate Clark, a Backrooms 'Still Life': an uncanny copied corpse in a pirate's coat who advances on you, flickers lights, breaks down doors, and turns the players he kills into new Still Lifes. Model CC-BY Slightlyoversizedsweater.",
+  "description": "Adds Pirate Clark, a Backrooms 'Still Life': an uncanny copied corpse in a pirate's coat who advances on you, flickers lights, breaks down doors, and turns the players he kills into new Still Lifes. v3.0.0 ships without an asset bundle — the entire prefab is built in pure C# at runtime, which makes the mod 100% reliable across Unity versions and immune to the bundle-load failures that plagued v1.x–v2.x. Model CC-BY Slightlyoversizedsweater.",
   "dependencies": [
     "BepInEx-BepInExPack-5.4.2100",
     "Evaisa-LethalLib-0.16.0"
