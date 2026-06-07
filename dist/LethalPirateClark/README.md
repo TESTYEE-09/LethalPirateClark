@@ -42,13 +42,14 @@ This mod is **not affiliated with Kane Pixels, Slightlyoversizedsweater, or Zeek
 
 ### Manual install
 1. Install BepInExPack and LethalLib (above)
-2. Extract `LethalPirateClark_v2.1.0.zip` to your `Lethal Company/` directory
+2. Extract `LethalPirateClark_v2.1.1.zip` to your `Lethal Company/` directory
 3. Confirm the install looks like:
    ```
-   Lethal Company/BepInEx/plugins/StillLife/
+   Lethal Company/BepInEx/plugins/<author>-LethalPirateClark/StillLife/
    ├── com.TESTYEE-09.lethalpirateclark.dll
    └── stilllife
    ```
+   (`<author>-` is `TESTYEE-09-` for the GitHub release, or `Unknown-` for the older Thunderstore listing — both are fine, the contents matter, not the prefix.)
 4. Launch the game
 
 ---
@@ -98,6 +99,9 @@ Pirate Clark is **`isOutsideEnemy: false` and `isDaytimeEnemy: false`** — he o
 ---
 
 ## Known issues / FAQ
+
+**Q: I see "AssetBundle.LoadFromFile returned NULL" / "could not be loaded because it is not compatible with this newer version of the Unity runtime" in the log, and Pirate Clark never spawns.**
+A: The `stilllife` bundle file beside the mod DLL is from an older version of the mod (pre-1.4.1 bundles were built with Unity 2022.3.9f1, which the live 2022.3.62 game runtime rejects). This happens when r2modman updates the DLL but not the bundle, usually because the user clicked "Update" instead of uninstalling and reinstalling. The mod now logs the bundle's file size and md5 on every launch — expected for v2.1.1 is ~1,070,202 bytes with md5 `7031579a65ff49856e99f60d90ad68e0`. If yours doesn't match: in r2modman, **UNINSTALL LethalPirateClark** (don't just disable it), then re-install the v2.1.1 zip. Both files are updated together that way. Manual install users can just copy the new `stilllife` file over the old one.
 
 **Q: I see "EnemyType.MaxCount" being skipped in the log.**
 A: Field is set as `MaxCount` in current Lethal Company. The mod logs the skip and falls back to the default. Will be fixed in a future version that introspects the actual field name.

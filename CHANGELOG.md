@@ -2,6 +2,15 @@
 
 All notable changes to LethalPirateClark are documented in this file. Dates are YYYY-MM-DD.
 
+## [2.1.1] - 2026-06-07
+
+### Loud install-corruption diagnostics
+v2.1.0 was confirmed shipping and loading correctly, but a v2.1.0 DLL landed on a user's PC next to a stale `stilllife` bundle from an earlier version of the mod (the bundle was built with Unity 2022.3.9f1, the live game runs 2022.3.62, and the runtime rejects the older bundle). v2.1.0 logged the failure as "AssetBundle.LoadFromFile returned NULL" with a paragraph of possible causes — which is technically correct but not actionable enough. v2.1.1 makes the install-corruption case impossible to misdiagnose.
+
+- **Bundle fingerprint on disk is now logged at load time.** New `Plugin.ComputeFileMd5` helper. On every startup the DLL logs the bundle's file size and md5, plus the known-good values for the current release. The expected md5 for v2.1.1 is `7031579a65ff49856e99f60d90ad68e0` and the expected size is `~1,070,202 bytes`; pre-1.4.1 bundles are ~50 KB and pre-2.1.1 bundles from older releases are different md5s, so a wrong bundle shows up immediately as a size/md5 mismatch in the log.
+- **Failure message now includes the fingerprint and points at the fix.** The "AssetBundle.LoadFromFile returned NULL" log line now embeds the on-disk file size and md5, and the message body explicitly says: "the 'stilllife' file beside this DLL is from an older version of the mod — FULLY UNINSTALL the mod in r2modman and reinstall the v2.1.1 zip" with a direct URL to the release. This is the exact install state a Windows user with a half-updated mod hits.
+- **No functional change.** All v2.1.0 fixes are unchanged; the bundle itself is byte-identical to v1.4.1 / v2.0.0 / v2.1.0. The only change is the load-time diagnostic.
+
 ## [2.1.0] - 2026-06-07
 
 ### Hardening pass — closes the "loads but does nothing" gap

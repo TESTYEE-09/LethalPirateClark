@@ -15,13 +15,13 @@ using UnityEngine.AI;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "2.1.0")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "2.1.1")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "2.1.0";
+    public const string Version = "2.1.1";
 
     internal static ManualLogSource Log = null!;
 
@@ -212,20 +212,44 @@ public class Plugin : BaseUnityPlugin
             return;
         }
 
+        // v2.1.1: log a fingerprint of the bundle file on disk so users with a
+        // broken install can self-diagnose by comparing it to the known-good
+        // value in the release notes. This is what catches the "DLL is v2.1.0
+        // but the bundle is from v1.0.0" case (the v1.x bundles are ~50 KB
+        // and the v2.x bundles are ~1 MB — a 20x size delta, so even a
+        // visual size check in the file explorer is conclusive).
+        long bundleSize = new FileInfo(bundlePath).Length;
+        string bundleMd5 = ComputeFileMd5(bundlePath);
+        Log.LogInfo($"[StillLife] Bundle file: '{bundlePath}' ({bundleSize:N0} bytes, md5={bundleMd5}). " +
+            $"Expected for v{Version}: ~1,070,202 bytes, md5=7031579a65ff49856e99f60d90ad68e0. " +
+            "If the size/md5 don't match, the 'stilllife' file beside this DLL is from an older " +
+            "version of the mod — FULLY UNINSTALL the mod in r2modman and reinstall the v" + Version + " zip.");
+
         _bundle = AssetBundle.LoadFromFile(bundlePath);
         if (_bundle == null)
         {
-            // Distinct messages for the two common failure modes so users
-            // don't have to dig into Unity docs to figure out which is which.
-            Log.LogError($"[StillLife] AssetBundle.LoadFromFile returned NULL for '{bundlePath}'. " +
-                "Likely causes: (a) bundle built for a different Unity version " +
-                "(rebuild with 2022.3.62f1 to match the live game), or " +
-                "(b) bundle built for a different target platform (must be StandaloneWindows64). " +
+            // The two failure modes a Windows user actually hits are:
+            //   (a) the bundle was built with an older Unity than the live game
+            //       (the common one — every pre-1.4.1 release is broken this way),
+            //   (b) the bundle was built for a different target platform (Mac).
+            // We log BOTH the file size and the md5 in the message so the user
+            // can see at a glance whether their bundle file is too small (case a)
+            // or otherwise off, and we tell them exactly how to fix it.
+            Log.LogError($"[StillLife] AssetBundle.LoadFromFile returned NULL for '{bundlePath}' " +
+                $"({bundleSize:N0} bytes, md5={bundleMd5}). " +
+                "Most likely the 'stilllife' file beside this DLL was built for a different " +
+                "Unity version (pre-1.4.1 bundles are ~50 KB and built with Unity 2022.3.9f1, " +
+                "which the live 2022.3.62 runtime rejects). " +
+                "FIX: in r2modman, UNINSTALL this mod (don't just disable), then re-install " +
+                "from LethalPirateClark_v" + Version + ".zip so both the DLL and the bundle " +
+                "are updated together. Manual install: grab the zip from " +
+                "https://github.com/TESTYEE-09/LethalPirateClark/releases/tag/v" + Version + " and " +
+                "extract it so 'plugins/<author>-LethalPirateClark/StillLife/stilllife' is replaced. " +
                 "Enemy NOT registered.");
             return;
         }
         var assetNames = _bundle.GetAllAssetNames();
-        Log.LogInfo($"[StillLife] Bundle loaded. Assets: {string.Join(", ", assetNames)}");
+        Log.LogInfo($"[StillLife] Bundle loaded. {assetNames.Length} assets: {string.Join(", ", assetNames)}");
 
         // The EnemyType ScriptableObject carries every spawn-critical field,
         // baked in the editor against the real game types (no runtime guessing).
@@ -423,6 +447,24 @@ public class Plugin : BaseUnityPlugin
             .ToList();
         if (matches.Count == 0) return null;
         return matches.FirstOrDefault(t => t.Assembly.GetName().Name == "Assembly-CSharp") ?? matches[0];
+    }
+
+    // v2.1.1: md5 of a file, used to fingerprint the bundle on disk so users
+    // with broken installs can self-diagnose. Kept inside the class so it can
+    // use Plugin.Log if the hashing itself throws.
+    internal static string ComputeFileMd5(string path)
+    {
+        try
+        {
+            using var stream = File.OpenRead(path);
+            using var md5 = System.Security.Cryptography.MD5.Create();
+            var hash = md5.ComputeHash(stream);
+            return System.BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+        }
+        catch (Exception e)
+        {
+            return "<md5 failed: " + e.GetType().Name + ">";
+        }
     }
 
     internal static void TrySetField(object obj, string name, object? value)
