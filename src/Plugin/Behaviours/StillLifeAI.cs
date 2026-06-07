@@ -61,7 +61,10 @@ public class StillLifeAI : EnemyAI
             base.Start();
             baseSpeed = Plugin.MoveSpeed.Value;
             currentBehaviourStateIndex = (int)State.Dormant;
-            Plugin.LiveStillLives++;
+            // Conversion cap is a server-authoritative count, so only the host
+            // ticks it. Otherwise every client in co-op would bump the counter
+            // and the cap would fire prematurely.
+            if (IsServer) Plugin.LiveStillLives++;
 
             // Ambient loop is 2D so it's audible from anywhere on the map (a
             // creeping presence cue), independent of where the clone spawned.
@@ -121,8 +124,12 @@ public class StillLifeAI : EnemyAI
 
     public override void DoAIInterval()
     {
+        // The prefab template (loaded from the bundle, parked in
+        // DontDestroyOnLoad, never network-spawned) reaches here if any
+        // base-class code path calls us. Skip — we have no real game state.
+        if (!IsSpawned) return;
         base.DoAIInterval();
-        if (isEnemyDead || StartOfRound.Instance.allPlayersDead) return;
+        if (isEnemyDead || StartOfRound.Instance == null || StartOfRound.Instance.allPlayersDead) return;
 
         _target = FindNearestPlayer(50f);
         if (_target == null)
@@ -209,7 +216,8 @@ public class StillLifeAI : EnemyAI
             // straight at the target and raycast DOWN to the floor so he stays
             // grounded instead of hanging at spawn height. Server-only; the
             // agent isn't driving the transform in this case so there's no
-            // fight.
+            // fight. Skip when frozen — the on-NavMesh path already handles
+            // freeze via agent.isStopped.
             if (IsServer && !_frozen && _target != null && currentSpeed > 0f && !onNavMesh)
             {
                 Vector3 toTarget = _target.transform.position - transform.position;
@@ -266,7 +274,8 @@ public class StillLifeAI : EnemyAI
 
     private void TryGrab()
     {
-        float dist = Vector3.Distance(transform.position, _target!.transform.position);
+        if (_target == null) return;
+        float dist = Vector3.Distance(transform.position, _target.transform.position);
         if (dist <= grabRange && currentBehaviourStateIndex != (int)State.Grabbing)
         {
             SwitchState(State.Grabbing);
@@ -277,7 +286,14 @@ public class StillLifeAI : EnemyAI
     [ClientRpc]
     private void GrabPlayerClientRpc(int playerId)
     {
-        var player = StartOfRound.Instance.allPlayerScripts[playerId];
+        // Defensive bounds check — peer state can be torn down mid-grab in
+        // edge cases (host migration, player disconnect during the RPC
+        // round-trip), and an out-of-range index would otherwise throw.
+        if (StartOfRound.Instance == null) return;
+        var players = StartOfRound.Instance.allPlayerScripts;
+        if (playerId < 0 || playerId >= players.Length) return;
+        var player = players[playerId];
+        if (player == null) return;
         creatureAnimator?.SetTrigger("grab");
 
         // The "eating" sound — only ever plays when Pirate Clark kills a player.
@@ -299,10 +315,17 @@ public class StillLifeAI : EnemyAI
     private IEnumerator ConvertCorpseAfterDelay(int playerId)
     {
         yield return new WaitForSeconds(conversionDelay);
+        if (!IsSpawned) yield break;
+        if (isEnemyDead) yield break;
+        if (StartOfRound.Instance == null) yield break;
+        if (RoundManager.Instance == null) yield break;
         if (!Plugin.ConversionEnabled.Value) yield break;
         if (Plugin.LiveStillLives >= Plugin.MaxStillLives.Value) yield break;
 
-        var player = StartOfRound.Instance.allPlayerScripts[playerId];
+        var players = StartOfRound.Instance.allPlayerScripts;
+        if (playerId < 0 || playerId >= players.Length) yield break;
+        var player = players[playerId];
+        if (player == null) yield break;
         Vector3 spawnPos = player.deadBody != null
             ? player.deadBody.transform.position
             : player.transform.position;
@@ -457,6 +480,8 @@ public class StillLifeAI : EnemyAI
     public override void OnDestroy()
     {
         base.OnDestroy();
-        Plugin.LiveStillLives = Mathf.Max(0, Plugin.LiveStillLives - 1);
+        // Server-authoritative count, so only the host decrements. The clients
+        // never incremented, so they must not decrement either.
+        if (IsServer) Plugin.LiveStillLives = Mathf.Max(0, Plugin.LiveStillLives - 1);
     }
 }

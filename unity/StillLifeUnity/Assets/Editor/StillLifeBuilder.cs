@@ -151,6 +151,19 @@ public static class StillLifeBuilder
         agent.radius = 0.35f; agent.height = 1.9f; agent.speed = 3.2f;
         agent.acceleration = 12f; agent.angularSpeed = 240f; agent.stoppingDistance = 0.6f;
         agent.areaMask = ~0;
+        agent.baseOffset = 0f; // pin feet to transform origin (no floating)
+
+        // --- Solid body collider on the root ---
+        // The Collision child has a TRIGGER for EnemyAICollisionDetect. The
+        // root needs a SOLID collider too so the enemy physically blocks
+        // players and the world; without one, players walk through the body
+        // and the enemy walks through walls when off the NavMesh.
+        var bodyCol = GetOrAdd<CapsuleCollider>(root);
+        bodyCol.isTrigger = false;        // SOLID — this is what the body uses
+        bodyCol.radius = 0.4f;
+        bodyCol.height = 2.0f;
+        bodyCol.center = new Vector3(0, 1.0f, 0);
+        bodyCol.direction = 1;
 
         // --- Netcode components (reflection: tolerate package version drift) ---
         AddByName(root, "NetworkObject", "Unity.Netcode");

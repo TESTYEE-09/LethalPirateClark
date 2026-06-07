@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -8,18 +9,19 @@ using BepInEx.Logging;
 using HarmonyLib;
 using LethalLib.Modules;
 using StillLife.Behaviours;
+using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.AI;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "2.0.0")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "2.1.0")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "2.0.0";
+    public const string Version = "2.1.0";
 
     internal static ManualLogSource Log = null!;
 
@@ -39,19 +41,29 @@ public class Plugin : BaseUnityPlugin
     // for the whole session. Never unloaded.
     private static AssetBundle? _bundle;
 
+    // Result of LoadAssetsAndRegister. Set during load; consumed by the
+    // deferred-attachment coroutine once the game has its singletons up.
+    private static GameObject? _prefab;
+    private static EnemyType? _enemyType;
+    private static bool _registered;
+
+    // Single coroutine driver — created in Awake, lives for the session.
+    private static Plugin? _instance;
+    private Coroutine? _deferredSetupCo;
+
     private readonly Harmony _harmony = new(Guid);
 
     private void Awake()
     {
         Log = Logger;
+        _instance = this;
 
         // v2.0.0 co-op fix: run the Netcode-weaver-injected RPC initializers.
         // The patcher (NetcodePatcher MSBuild SDK) marks them with
         // [RuntimeInitializeOnLoadMethod], which Unity would normally call on
         // class load — but our assembly isn't managed by Unity, so we invoke
         // them once here. Without this, StillLifeAI's ClientRpcs are never
-        // registered and never reach remote clients. Guarded so a missing
-        // weaver (e.g. an unpatched debug build) can't break plugin load.
+        // registered and never reach remote clients.
         InitializeNetworkRpcs();
 
         SpawnWeight = Config.Bind("Spawn", "Rarity", 40,
@@ -72,6 +84,9 @@ public class Plugin : BaseUnityPlugin
         MaxStillLives = Config.Bind("Conversion", "MaxAlive", 4,
             "Hard cap on simultaneous Still Lifes so conversions can't snowball endlessly.");
 
+        // Load the bundle + register the enemy with LethalLib. We can do this
+        // synchronously — both the bundle and the EnemyType/enemyPrefab refs are
+        // pure managed data and don't trigger any Unity Awake/Start callbacks.
         try
         {
             LoadAssetsAndRegister();
@@ -83,16 +98,65 @@ public class Plugin : BaseUnityPlugin
             // Don't re-throw — let the rest of BepInEx keep working.
         }
 
+        // The StillLifeAI + EnemyAICollisionDetect components are added to the
+        // prefab *deferred* — their base classes call RoundManager.Instance /
+        // StartOfRound.Instance during Awake, which is null at BepInEx
+        // chainloader time. Defer to the first scene load (so the game has
+        // constructed its singletons) before AddComponent runs.
+        _deferredSetupCo = StartCoroutine(DeferredPrefabSetup());
+
         _harmony.PatchAll(Assembly.GetExecutingAssembly());
 
         // Safety-net watchdog: recovers any clone that ends up stuck/off-mesh.
         // With the bundle prefab this rarely has anything to do (clones spawn
         // active and on the NavMesh), but it's cheap insurance.
         var watchdogGo = new GameObject("StillLifeWatchdog") { hideFlags = HideFlags.HideAndDontSave };
-        UnityEngine.Object.DontDestroyOnLoad(watchdogGo);
+        DontDestroyOnLoad(watchdogGo);
         watchdogGo.AddComponent<StillLifeWatchdog>();
 
         Log.LogInfo($"{Name} v{Version} loaded.");
+    }
+
+    // Coroutine: wait for the game's singletons to exist, then attach
+    // StillLifeAI + EnemyAICollisionDetect to the bundle prefab. We don't do
+    // this in Awake() because EnemyAI.Awake reads RoundManager.Instance, which
+    // is null until StartOfRound.Awake fires (long after Plugin.Awake).
+    private IEnumerator DeferredPrefabSetup()
+    {
+        // Wait up to 30s for RoundManager + StartOfRound to come up. The game
+        // always constructs these before the first moon scene loads, so this
+        // is a safety net more than anything.
+        float deadline = Time.realtimeSinceStartup + 30f;
+        while (Time.realtimeSinceStartup < deadline)
+        {
+            if (RoundManager.Instance != null && StartOfRound.Instance != null)
+                break;
+            yield return null;
+        }
+
+        if (RoundManager.Instance == null || StartOfRound.Instance == null)
+        {
+            Log.LogError("[StillLife] Timed out waiting for RoundManager/StartOfRound. " +
+                "StillLifeAI/EnemyAICollisionDetect will not be attached — enemy will not function.");
+            yield break;
+        }
+
+        if (_prefab == null || _enemyType == null)
+        {
+            Log.LogError("[StillLife] Deferred setup: prefab or EnemyType is null. " +
+                "Bundle load must have failed earlier.");
+            yield break;
+        }
+
+        try
+        {
+            PreparePrefab(_prefab, _enemyType);
+        }
+        catch (System.Exception ex)
+        {
+            Log.LogError($"[StillLife] Deferred PreparePrefab failed: {ex.GetType().Name}: {ex.Message}");
+            Log.LogError($"[StillLife] Stack: {ex.StackTrace}");
+        }
     }
 
     // Invoke every [RuntimeInitializeOnLoadMethod] in this assembly exactly
@@ -132,10 +196,8 @@ public class Plugin : BaseUnityPlugin
     // v1.4.0: load the enemy from the Unity-built asset bundle instead of
     // building the prefab procedurally at runtime. The bundle's NetworkObject
     // carries a GlobalObjectIdHash baked by the editor (a stable, valid hash
-    // that NGO can resolve) — the thing the runtime reflection-set could never
-    // do reliably, which is why every 1.0.x–1.3.x build spawned a clone that
-    // was never truly network-spawned (IsServer=False) and so floated, never
-    // moved, and got cleaned up ("disappeared").
+    // that NGO can resolve). We split this in two phases: load+register (now)
+    // and AddComponent (deferred, after RoundManager exists).
     private void LoadAssetsAndRegister()
     {
         Log.LogInfo("[StillLife] === Loading Pirate Clark from asset bundle ===");
@@ -153,12 +215,17 @@ public class Plugin : BaseUnityPlugin
         _bundle = AssetBundle.LoadFromFile(bundlePath);
         if (_bundle == null)
         {
+            // Distinct messages for the two common failure modes so users
+            // don't have to dig into Unity docs to figure out which is which.
             Log.LogError($"[StillLife] AssetBundle.LoadFromFile returned NULL for '{bundlePath}'. " +
-                "The bundle is corrupt or was built for the wrong platform (it must be StandaloneWindows64). " +
+                "Likely causes: (a) bundle built for a different Unity version " +
+                "(rebuild with 2022.3.62f1 to match the live game), or " +
+                "(b) bundle built for a different target platform (must be StandaloneWindows64). " +
                 "Enemy NOT registered.");
             return;
         }
-        Log.LogInfo($"[StillLife] Bundle loaded. Assets: {string.Join(", ", _bundle.GetAllAssetNames())}");
+        var assetNames = _bundle.GetAllAssetNames();
+        Log.LogInfo($"[StillLife] Bundle loaded. Assets: {string.Join(", ", assetNames)}");
 
         // The EnemyType ScriptableObject carries every spawn-critical field,
         // baked in the editor against the real game types (no runtime guessing).
@@ -179,13 +246,22 @@ public class Plugin : BaseUnityPlugin
 
         // Honour the config cap (the bundle bakes a default of 4).
         TrySetField(enemy, "MaxCount", SpawnMaxCount.Value);
+        TrySetField(enemy, "maxCount", SpawnMaxCount.Value); // legacy field name
 
-        PreparePrefab(prefab, enemy);
+        // Critical: park the prefab in DontDestroyOnLoad so it survives scene
+        // transitions and NetworkSpawn can find it from any moon. HideAndDontSave
+        // keeps it out of saves / scene listings. We deliberately leave it
+        // ACTIVE — LethalLib/RoundManager's Instantiate+NetworkSpawn expects
+        // an active template, and we suppress component Awake callbacks by
+        // AddComponent-ing them ONLY in DeferredPrefabSetup, after
+        // RoundManager.Instance is non-null.
+        DontDestroyOnLoad(prefab);
+        prefab.hideFlags = HideFlags.HideAndDontSave;
 
         // Register the network prefab so NGO can resolve clones at spawn time.
         try
         {
-            NetworkPrefabs.RegisterNetworkPrefab(prefab);
+            LethalLib.Modules.NetworkPrefabs.RegisterNetworkPrefab(prefab);
         }
         catch (System.Exception npEx)
         {
@@ -198,23 +274,34 @@ public class Plugin : BaseUnityPlugin
         var infoNode = _bundle.LoadAsset<TerminalNode>("StillLifeFile");
         var infoKeyword = _bundle.LoadAsset<TerminalKeyword>("StillLifeKeyword");
 
-        Enemies.RegisterEnemy(
-            enemy,
-            SpawnWeight.Value,
-            Levels.LevelTypes.All,
-            Enemies.SpawnType.Default,
-            infoNode,
-            infoKeyword);
+        // Guard against double-registration if Awake is somehow called twice
+        // (shouldn't happen with BepInEx but the guard is cheap).
+        if (!_registered)
+        {
+            Enemies.RegisterEnemy(
+                enemy,
+                SpawnWeight.Value,
+                Levels.LevelTypes.All,
+                Enemies.SpawnType.Default,
+                infoNode,
+                infoKeyword);
+            _registered = true;
+        }
+
+        // Stash for the deferred PreparePrefab pass.
+        _prefab = prefab;
+        _enemyType = enemy;
 
         Log.LogInfo($"[StillLife] Registered '{enemy.enemyName}' from bundle — rarity {SpawnWeight.Value}, " +
-            $"max alive {SpawnMaxCount.Value}, bestiary={(infoNode != null ? "yes" : "no")}.");
+            $"max alive {SpawnMaxCount.Value}, bestiary={(infoNode != null ? "yes" : "no")}, " +
+            $"netObjHash={(prefab.GetComponent<NetworkObject>() != null ? prefab.GetComponent<NetworkObject>().GlobalObjectIdHash.ToString() : "MISSING")}.");
     }
 
     // Add the runtime-only components the bundle deliberately leaves out (the
     // mod's own AI script and the game's EnemyAICollisionDetect), and wire up
-    // the AI's references. This runs identically on every peer at load, before
-    // the prefab is registered or cloned, so all clones share one NetworkBehaviour
-    // layout (required for NGO to keep host and clients in sync).
+    // the AI's references. This runs from DeferredPrefabSetup() — which has
+    // already waited for RoundManager.Instance — so the components' Awake()
+    // callbacks see a valid game state.
     private void PreparePrefab(GameObject prefab, EnemyType enemy)
     {
         // --- StillLifeAI (an EnemyAI subclass → a NetworkBehaviour) ---
@@ -230,6 +317,22 @@ public class Plugin : BaseUnityPlugin
         if (navAgent != null)
         {
             navAgent.baseOffset = 0f;
+            // The bundle's NavMeshAgent was authored at radius 0.35 / height
+            // 1.9. Keep those as-is (model matches).
+            ai.agent = navAgent;
+        }
+        else
+        {
+            Log.LogWarning("[StillLife] NavMeshAgent missing from bundle prefab. " +
+                "Adding a runtime one — movement will be off-mesh fallback only.");
+            navAgent = prefab.AddComponent<NavMeshAgent>();
+            navAgent.radius = 0.35f;
+            navAgent.height = 1.9f;
+            navAgent.speed = 3.2f;
+            navAgent.acceleration = 12f;
+            navAgent.angularSpeed = 240f;
+            navAgent.stoppingDistance = 0.6f;
+            navAgent.baseOffset = 0f;
             ai.agent = navAgent;
         }
 
@@ -240,10 +343,13 @@ public class Plugin : BaseUnityPlugin
 
         voice.playOnAwake = false;
         voice.loop = true;
-        voice.spatialBlend = 0f;   // 2D — audible anywhere on the map (v1.3.3 intent)
+        voice.spatialBlend = 0f;   // 2D — audible anywhere on the map
         voice.volume = 1f;
+        voice.minDistance = 0f;
+        voice.maxDistance = 500f;
         sfx.playOnAwake = false;
         sfx.spatialBlend = 1f;     // 3D positional one-shots
+        sfx.loop = false;
 
         foreach (var clip in _bundle!.LoadAllAssets<AudioClip>())
         {
@@ -275,6 +381,23 @@ public class Plugin : BaseUnityPlugin
                 cap.radius = 0.4f;
                 cap.height = 2.0f;
                 cap.center = Vector3.zero;
+            }
+            // The bundle's Collision child has a trigger CapsuleCollider. That's
+            // what EnemyAICollisionDetect reads to find player overlap. But the
+            // prefab also needs a SOLID (non-trigger) collider on the root or
+            // on the Collision child so the enemy physically blocks players
+            // and the world (otherwise the player walks through the body and
+            // the enemy walks through walls when the agent is off-mesh).
+            // Use a non-trigger CapsuleCollider on the root, sized to the model.
+            var bodyCol = prefab.GetComponent<CapsuleCollider>();
+            if (bodyCol == null)
+            {
+                bodyCol = prefab.AddComponent<CapsuleCollider>();
+                bodyCol.isTrigger = false;            // solid: blocks player physics
+                bodyCol.radius = 0.4f;
+                bodyCol.height = 2.0f;
+                bodyCol.center = new Vector3(0, 1.0f, 0);
+                bodyCol.direction = 1;               // Y-axis
             }
             var existingCd = hitbox.GetComponent(enemyAICollisionT);
             var cd = existingCd != null ? existingCd : hitbox.AddComponent(enemyAICollisionT);

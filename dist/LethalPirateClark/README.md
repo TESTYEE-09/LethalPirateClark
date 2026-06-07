@@ -42,10 +42,10 @@ This mod is **not affiliated with Kane Pixels, Slightlyoversizedsweater, or Zeek
 
 ### Manual install
 1. Install BepInExPack and LethalLib (above)
-2. Extract `LethalPirateClark_v1.0.1.zip` to your `Lethal Company/` directory
+2. Extract `LethalPirateClark_v2.1.0.zip` to your `Lethal Company/` directory
 3. Confirm the install looks like:
    ```
-   Lethal Company/BepInEx/plugins/LethalPirateClark/
+   Lethal Company/BepInEx/plugins/StillLife/
    ├── com.TESTYEE-09.lethalpirateclark.dll
    └── stilllife
    ```

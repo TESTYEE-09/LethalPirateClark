@@ -2,7 +2,21 @@
 
 All notable changes to LethalPirateClark are documented in this file. Dates are YYYY-MM-DD.
 
-## [2.0.0] - 2026-06-07
+## [2.1.0] - 2026-06-07
+
+### Hardening pass — closes the "loads but does nothing" gap
+v2.0.0 fixed the network spawn and the co-op RPC plumbing. v2.1.0 fixes the next layer down: even when the bundle loads, several real failures still kept Pirate Clark from showing up on the spawn menu, from getting a body collider, and from running the AI at the right time. This release closes those, in order of how often they bit during the v2.0.0 playtest.
+
+- **Deferred `AddComponent<StillLifeAI>` until `RoundManager.Instance` is up.** The single most common "loads but does nothing" failure: `Plugin.Awake` runs during BepInEx chainloader, *before* the game's `RoundManager.Instance` singleton is constructed. The previous build called `AddComponent<StillLifeAI>` on the bundle prefab right there in `LoadAssetsAndRegister`, which immediately fired `EnemyAI.Awake` — whose very first line is `thisEnemyIndex = RoundManager.Instance.numberOfEnemiesInScene`. NRE. The template's components were left in a broken state, clones inherited it, and the AI never ran. v2.1.0 splits load+register (synchronous, can run in Awake) from `PreparePrefab` (AddComponent, deferred) and waits for `RoundManager.Instance != null && StartOfRound.Instance != null` in a coroutine before attaching the AI and `EnemyAICollisionDetect`. The bundle and EnemyType are still registered with LethalLib immediately, so the enemy shows up in the spawn menu from the moment the game starts; only the AI's per-clone Awake defers.
+- **Solid body collider added to the root.** The bundle prefab's only collider was the trigger `CapsuleCollider` on the `Collision` child (used by `EnemyAICollisionDetect` to detect the player). There was no solid collider on the model, so players walked straight through the body, and — when the NavMeshAgent was off the mesh — the enemy walked through walls instead of bumping them. v2.1.0 adds a non-trigger `CapsuleCollider` on the root (radius 0.4, height 2, center y=1) at runtime; the Unity builder (`StillLifeBuilder.cs`) is also updated to bake the same collider into the bundle for future rebuilds.
+- **Co-op-correct conversion cap.** `Plugin.LiveStillLives` was being incremented in `StillLifeAI.Start` on **every** peer. With 4 co-op clients, a single Pirate Clark's Start would bump the count by 4, and the conversion cap (`MaxStillLives`) would fire after just one enemy. v2.1.0 only ticks the count on the host (`if (IsServer)`), and only the host decrements in `OnDestroy`. The `MaxStillLives` check in `ConvertCorpseAfterDelay` (which is already wrapped in `if (IsServer)`) now means what it says.
+- **`DoAIInterval` guards against the template and null singletons.** Added an `if (!IsSpawned) return;` at the top so the parked prefab template can't ever tick its AI loop, and an `StartOfRound.Instance == null` guard so a brief race during scene transitions can't NRE.
+- **Off-NavMesh fallback respects freeze.** The manual-transform fallback ran even when the enemy was frozen, which let him slide around in `frozen` pose (unsettling and bug-shaped). Now it skips when `_frozen` is true, matching the on-NavMesh path's freeze behavior.
+- **Bundle error message is now actually useful.** When `AssetBundle.LoadFromFile` returns null, the old log only said "corrupt or wrong platform". v2.1.0 lists both common causes (Unity-version mismatch, target-platform mismatch) with the rebuild steps, and logs the actual `GetAllAssetNames()` of a successfully loaded bundle so future regressions are immediately diagnosable.
+- **Plugin construction is now idempotent.** `Enemies.RegisterEnemy` is guarded behind a `_registered` flag so a hypothetical second Awake (e.g. test harnesses) doesn't double-add. Prefab handling is centralized in `LoadAssetsAndRegister` → `PreparePrefab` (deferred) so the same flow runs on every install.
+
+No model / audio / bundle changes — the `stilllife` bundle is byte-identical to v1.4.1 / v2.0.0; only the DLL changed.
+
 
 ### Co-op hardening + polish — the kill actually networks now
 v1.4.1 made Pirate Clark spawn, render, and move correctly on the host. v2.0.0 makes him behave correctly for **everyone in a co-op lobby**, and trims the build down from a pile of diagnostics to a release.
