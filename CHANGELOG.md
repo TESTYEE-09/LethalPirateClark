@@ -2,6 +2,16 @@
 
 All notable changes to LethalPirateClark are documented in this file. Dates are YYYY-MM-DD.
 
+## [2.1.2] - 2026-06-07
+
+### Self-contained: bundle is now embedded inside the DLL as a fallback
+v2.1.1's fingerprint log confirmed the on-disk `stilllife` file in a user's install was byte-identical to the one I built and shipped (md5 `7031579a65ff49856e99f60d90ad68e0`, 1,070,202 bytes) — yet `AssetBundle.LoadFromFile` still returned null with "not compatible with this newer version of the Unity runtime". The bundle is correct, the runtime is correct, but something on that user's machine (AV scan, NTFS file locking, r2modman's path through `AppData\Roaming\`, or some other Windows-specific factor) is blocking the file-system load. v2.1.2 makes the mod self-contained: the DLL now also carries a base64-encoded copy of the bundle as a fallback, and if the on-disk load fails it falls back to `AssetBundle.LoadFromMemory(embedded)`.
+
+- **New `EmbeddedAssets.StillLifeBundleBase64` const** holds a base64-encoded copy of the exact same `stilllife` file the build ships. ~1.07 MB raw → ~1.43 MB base64, compiled into the DLL. Bumping the version of the embedded copy requires regenerating `EmbeddedAssets.cs` from the source bundle.
+- **`Plugin.LoadAssetsAndRegister` now has a fallback path.** Tries `AssetBundle.LoadFromFile` first (fast, no decode cost). If that returns null, logs the file's size + md5 + path, then calls `Convert.FromBase64String(EmbeddedAssets.StillLifeBundleBase64)` and tries `AssetBundle.LoadFromMemory`. If that also fails, the existing "this bundle is wrong" diagnostic fires with the original on-disk fingerprint for the user to compare.
+- **The DLL grew from 40 KB to ~5.7 MB.** That's the cost of carrying the bundle. Acceptable for a self-contained install; the mod no longer depends on a second file at all if the embedded path works.
+- **No functional change to the AI / movement / spawning logic** when both loads work — same code path. The fallback is only taken on failure.
+
 ## [2.1.1] - 2026-06-07
 
 ### Loud install-corruption diagnostics

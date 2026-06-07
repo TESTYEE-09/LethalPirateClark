@@ -42,15 +42,17 @@ This mod is **not affiliated with Kane Pixels, Slightlyoversizedsweater, or Zeek
 
 ### Manual install
 1. Install BepInExPack and LethalLib (above)
-2. Extract `LethalPirateClark_v2.1.1.zip` to your `Lethal Company/` directory
+2. Extract `LethalPirateClark_v2.1.2.zip` to your `Lethal Company/` directory
 3. Confirm the install looks like:
    ```
    Lethal Company/BepInEx/plugins/<author>-LethalPirateClark/StillLife/
-   ├── com.TESTYEE-09.lethalpirateclark.dll
-   └── stilllife
+   ├── com.TESTYEE-09.lethalpirateclark.dll   (5.7 MB; carries an embedded bundle)
+   └── stilllife                              (1.07 MB; optional — used if present)
    ```
    (`<author>-` is `TESTYEE-09-` for the GitHub release, or `Unknown-` for the older Thunderstore listing — both are fine, the contents matter, not the prefix.)
 4. Launch the game
+
+> **v2.1.2+: self-contained install.** The DLL now also carries the asset bundle embedded as a base64-encoded fallback, so even if the `stilllife` file on disk fails to load (Windows AV interference, NTFS file locking, partial install state, etc.) the mod will still load the bundle from its own memory. The on-disk `stilllife` is kept for the faster `LoadFromFile` path, but no longer required.
 
 ---
 

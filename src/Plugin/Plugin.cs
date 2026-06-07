@@ -15,13 +15,13 @@ using UnityEngine.AI;
 
 namespace StillLife;
 
-[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "2.1.1")]
+[BepInPlugin("com.TESTYEE-09.lethalpirateclark", "LethalPirateClark", "2.1.2")]
 [BepInDependency(LethalLib.Plugin.ModGUID)]
 public class Plugin : BaseUnityPlugin
 {
     public const string Guid = "com.TESTYEE-09.lethalpirateclark";
     public const string Name = "LethalPirateClark";
-    public const string Version = "2.1.1";
+    public const string Version = "2.1.2";
 
     internal static ManualLogSource Log = null!;
 
@@ -228,6 +228,28 @@ public class Plugin : BaseUnityPlugin
         _bundle = AssetBundle.LoadFromFile(bundlePath);
         if (_bundle == null)
         {
+            // The on-disk file is the right one (md5 matches the build artifact)
+            // but Unity still rejected it. v2.1.2: fall back to the embedded copy
+            // baked into the DLL, which is a byte-for-byte duplicate of the
+            // shipped file but loaded directly from memory — no file handle,
+            // no Windows AV scan, no NTFS locking. This path is what
+            // self-heals a partial install where the disk copy is somehow
+            // unreadable.
+            Log.LogWarning($"[StillLife] AssetBundle.LoadFromFile returned NULL for '{bundlePath}' " +
+                $"({bundleSize:N0} bytes, md5={bundleMd5}). Falling back to embedded copy inside the DLL...");
+            try
+            {
+                byte[] embedded = Convert.FromBase64String(EmbeddedAssets.StillLifeBundleBase64);
+                Log.LogInfo($"[StillLife] Embedded bundle: {embedded.Length:N0} bytes (decoded from base64).");
+                _bundle = AssetBundle.LoadFromMemory(embedded);
+            }
+            catch (System.Exception fbEx)
+            {
+                Log.LogError($"[StillLife] Embedded fallback failed: {fbEx.GetType().Name}: {fbEx.Message}");
+            }
+        }
+        if (_bundle == null)
+        {
             // The two failure modes a Windows user actually hits are:
             //   (a) the bundle was built with an older Unity than the live game
             //       (the common one — every pre-1.4.1 release is broken this way),
@@ -235,8 +257,8 @@ public class Plugin : BaseUnityPlugin
             // We log BOTH the file size and the md5 in the message so the user
             // can see at a glance whether their bundle file is too small (case a)
             // or otherwise off, and we tell them exactly how to fix it.
-            Log.LogError($"[StillLife] AssetBundle.LoadFromFile returned NULL for '{bundlePath}' " +
-                $"({bundleSize:N0} bytes, md5={bundleMd5}). " +
+            Log.LogError($"[StillLife] AssetBundle load failed (both on-disk and embedded). On-disk: " +
+                $"'{bundlePath}' ({bundleSize:N0} bytes, md5={bundleMd5}). " +
                 "Most likely the 'stilllife' file beside this DLL was built for a different " +
                 "Unity version (pre-1.4.1 bundles are ~50 KB and built with Unity 2022.3.9f1, " +
                 "which the live 2022.3.62 runtime rejects). " +
